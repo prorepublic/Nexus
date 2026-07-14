@@ -1,0 +1,2 @@
+{"type":"system","subtype":"init","session_id":"sess-err456","tools":[],"model":"claude-opus-4"}
+{"type":"result","subtype":"error_max_turns","is_error":true,"result":"","num_turns":2,"session_id":"sess-err456"}
