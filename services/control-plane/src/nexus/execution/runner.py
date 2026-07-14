@@ -275,6 +275,30 @@ def _db_recorder(
         )
 
 
+def spawn_detached(argv: list[str], cwd: Path, log_file: Path) -> int:
+    """Start Nexus's OWN control-plane process detached from the caller.
+
+    This is service self-management, not task execution: the child is our own
+    CLI entry point with a fixed argv shape, it outlives the caller by design,
+    and its output goes to the managed log file. It still runs in its own
+    session (process group) so `nexus stop` can terminate the whole tree.
+    """
+    allowed_modules = {"nexus.cli.main"}
+    if len(argv) < 3 or argv[1] != "-m" or argv[2] not in allowed_modules:
+        raise ValueError("spawn_detached only launches the Nexus CLI module")
+    log_file.parent.mkdir(parents=True, exist_ok=True)
+    with open(log_file, "ab") as sink:
+        child = subprocess.Popen(
+            argv,
+            cwd=str(cwd),
+            stdout=sink,
+            stderr=sink,
+            stdin=subprocess.DEVNULL,
+            start_new_session=True,
+        )
+    return child.pid
+
+
 _runner: ProcessRunner | None = None
 
 

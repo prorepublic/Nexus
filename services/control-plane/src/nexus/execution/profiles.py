@@ -301,6 +301,14 @@ PROFILES: dict[str, ExecutionProfile] = {
             description="Nexus's own database migrations.",
         ),
         ExecutionProfile(
+            name="service-local",
+            executables=frozenset({"launchctl"}),
+            allowed_subcommands=frozenset({"load", "unload", "list"}),
+            timeout_seconds=30,
+            writes_allowed=True,
+            description="Managing Nexus's own launchd agent.",
+        ),
+        ExecutionProfile(
             name="tool-install",
             executables=frozenset({"npm"}),
             allowed_subcommands=frozenset({"install", "view", "config", "ls"}),

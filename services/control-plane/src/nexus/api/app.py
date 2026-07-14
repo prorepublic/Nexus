@@ -6,7 +6,6 @@ is an owner-approval-gated change (docs/THREAT-MODEL.md).
 """
 
 from collections.abc import Iterator
-from datetime import UTC, datetime
 from typing import Literal
 
 from fastapi import Depends, FastAPI, HTTPException
@@ -19,27 +18,56 @@ from nexus.api.schemas import (
     ApprovalDecisionIn,
     ApprovalOut,
     CostModeOut,
+    FeedbackReportOut,
+    FindingOut,
     GoalCreateIn,
     GoalDetailOut,
     GoalOut,
     HealthOut,
     ListOut,
     OkOut,
+    PlanOut,
+    PullRequestOut,
+    RepositoryCreateIn,
+    RepositoryOut,
     RunDetailOut,
     RunEventOut,
     RunOut,
+    SettingsOut,
     SystemStatusOut,
+    TaskDetailOut,
     TaskOut,
+    TrustIn,
+    ValidationResultOut,
     WorkerStatusOut,
 )
+from nexus.config import get_settings
 from nexus.db.base import get_session_factory
-from nexus.db.models import Approval, Goal, Repository, Run, Task
+from nexus.db.models import (
+    Approval,
+    ExecutionPlan,
+    Goal,
+    PullRequestRecord,
+    Repository,
+    ReviewFinding,
+    Run,
+    Task,
+    ValidationResult,
+)
 from nexus.domain.enums import ApprovalState, GoalStatus, TaskStatus
-from nexus.domain.transitions import assert_goal_transition
+from nexus.domain.transitions import assert_goal_transition, assert_task_transition
 from nexus.policies.cost import DEFAULT_COST_POLICY
+from nexus.services.approvals import decide_approval
 from nexus.services.events import record_audit
+from nexus.services.github_feedback import import_pr_feedback
 from nexus.services.orchestrator import cancel_run
-from nexus.services.planner import DeterministicPlanner, create_plan
+from nexus.services.planner import PlanningError, create_plan, select_planner
+from nexus.services.repositories import (
+    RepositoryError,
+    get_repository,
+    register_repository,
+    set_trust,
+)
 from nexus.workers.registry import get_registry
 
 app = FastAPI(title="Nexus Control Plane", version=nexus.__version__)
@@ -49,12 +77,34 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3400", "http://127.0.0.1:3400"],
     allow_methods=["*"],
-    allow_headers=["*"],
+    allow_headers=["*", "X-Nexus-Client"],
 )
+
+# Local-owner protection (ADR-012). Binding to localhost is not sufficient
+# against browser-origin attacks:
+# - Host allowlist defeats DNS rebinding (attacker domain resolving to 127.0.0.1
+#   arrives with a foreign Host header);
+# - state-changing requests require the custom X-Nexus-Client header, which
+#   forces a CORS preflight, so a hostile web page cannot fire-and-forget
+#   form POSTs at the control plane.
+_ALLOWED_HOSTS = {"localhost", "127.0.0.1"}
+_STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
 
 
 @app.middleware("http")
-async def security_headers(request, call_next):  # noqa: ANN001
+async def local_owner_protection(request, call_next):  # noqa: ANN001
+    host = (request.headers.get("host") or "").split(":")[0].lower()
+    if host not in _ALLOWED_HOSTS:
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse({"detail": "host not allowed"}, status_code=421)
+    if request.method in _STATE_CHANGING and not request.headers.get("x-nexus-client"):
+        from fastapi.responses import JSONResponse
+
+        return JSONResponse(
+            {"detail": "missing X-Nexus-Client header (local-owner protection)"},
+            status_code=403,
+        )
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -159,9 +209,11 @@ def create_goal(payload: GoalCreateIn, db: Session = Depends(get_db)) -> GoalOut
             select(Repository).where(Repository.name == payload.repository)
         ).first()
         if repository is None:
-            repository = Repository(name=payload.repository)
-            db.add(repository)
-            db.flush()
+            raise HTTPException(
+                422,
+                f"repository '{payload.repository}' is not registered; "
+                "register it first (nexus repo add or POST /api/repositories)",
+            )
     goal = Goal(
         title=payload.title.strip(),
         description=payload.description.strip(),
@@ -170,17 +222,21 @@ def create_goal(payload: GoalCreateIn, db: Session = Depends(get_db)) -> GoalOut
         requested_worker=payload.requested_worker,
         acceptance_criteria=payload.acceptance_criteria,
         constraints=payload.constraints,
+        plan_mode=payload.plan_mode,
         repository_id=repository.id if repository else None,
     )
     db.add(goal)
     db.flush()
-    create_plan(db, goal, DeterministicPlanner())
+    try:
+        create_plan(db, goal, select_planner(goal))
+    except PlanningError as exc:
+        raise HTTPException(502, f"planning failed: {exc}") from None
     record_audit(
         db,
         "goal.created",
         goal_id=goal.id,
         actor="owner",
-        metadata={"requested_worker": payload.requested_worker},
+        metadata={"requested_worker": payload.requested_worker, "plan_mode": payload.plan_mode},
     )
     db.flush()
     return _goal_out(goal)
@@ -299,24 +355,229 @@ def list_approvals(state: str = "pending", db: Session = Depends(get_db)) -> Lis
 
 
 @app.post("/api/approvals/{approval_id}/decision", response_model=OkOut)
-def decide_approval(
+def decide_approval_endpoint(
     approval_id: str, payload: ApprovalDecisionIn, db: Session = Depends(get_db)
 ) -> OkOut:
-    approval = db.get(Approval, approval_id)
-    if approval is None:
-        raise HTTPException(404, "approval not found")
-    if approval.state != ApprovalState.PENDING:
-        raise HTTPException(409, f"approval already {approval.state}")
-    approval.state = (
-        ApprovalState.APPROVED if payload.decision == "approved" else ApprovalState.DENIED
-    )
-    approval.decided_at = datetime.now(UTC)
-    approval.decision_note = payload.note
+    """Decisions flow through the approvals service so blocked tasks resume
+    (or cancel) deterministically."""
+    try:
+        decide_approval(db, approval_id, payload.decision, payload.note)
+    except ValueError as exc:
+        code = 404 if "not found" in str(exc) else 409
+        raise HTTPException(code, str(exc)) from None
+    return OkOut(ok=True)
+
+
+# --- repositories -------------------------------------------------------------
+@app.get("/api/repositories", response_model=ListOut[RepositoryOut])
+def list_repositories(db: Session = Depends(get_db)) -> ListOut[RepositoryOut]:
+    repos = db.scalars(select(Repository).order_by(Repository.name)).all()
+    return ListOut(items=[_repo_out(repo) for repo in repos])
+
+
+@app.post("/api/repositories", response_model=RepositoryOut, status_code=201)
+def register_repository_endpoint(
+    payload: RepositoryCreateIn, db: Session = Depends(get_db)
+) -> RepositoryOut:
+    try:
+        repo = register_repository(db, payload.source, name=payload.name)
+    except RepositoryError as exc:
+        raise HTTPException(422, str(exc)) from None
+    record_audit(db, "repository.registered", actor="owner", metadata={"name": repo.name})
+    return _repo_out(repo)
+
+
+@app.get("/api/repositories/{repo_id}", response_model=RepositoryOut)
+def get_repository_endpoint(repo_id: str, db: Session = Depends(get_db)) -> RepositoryOut:
+    try:
+        repo = get_repository(db, repo_id)
+    except RepositoryError as exc:
+        raise HTTPException(404, str(exc)) from None
+    return _repo_out(repo)
+
+
+@app.post("/api/repositories/{repo_id}/trust", response_model=RepositoryOut)
+def set_repository_trust(
+    repo_id: str, payload: TrustIn, db: Session = Depends(get_db)
+) -> RepositoryOut:
+    try:
+        repo = get_repository(db, repo_id)
+        repo = set_trust(db, repo.name, payload.level)
+    except RepositoryError as exc:
+        raise HTTPException(422, str(exc)) from None
     record_audit(
         db,
-        "approval.decided",
+        "repository.trust-changed",
         actor="owner",
-        status=str(approval.state),
-        metadata={"approval_id": approval_id, "kind": approval.kind},
+        metadata={"name": repo.name, "level": payload.level},
     )
+    return _repo_out(repo)
+
+
+def _repo_out(repo: Repository) -> RepositoryOut:
+    return RepositoryOut(
+        id=repo.id,
+        name=repo.name,
+        local_path=repo.local_path,
+        github_slug=repo.github_slug,
+        default_branch=repo.default_branch,
+        trust_level=repo.trust_level,
+        onboarded=repo.onboarded,
+        languages=[str(x) for x in (repo.languages or [])],
+        validation_kinds=sorted((repo.validation_profile or {}).keys()),
+    )
+
+
+# --- plans, task detail, retry --------------------------------------------------
+@app.get("/api/goals/{goal_id}/plan", response_model=PlanOut)
+def get_plan(goal_id: str, db: Session = Depends(get_db)) -> PlanOut:
+    plan = db.scalars(select(ExecutionPlan).where(ExecutionPlan.goal_id == goal_id)).first()
+    if plan is None:
+        raise HTTPException(404, "no plan for this goal")
+    return PlanOut(
+        id=plan.id,
+        goal_id=goal_id,
+        objective=plan.objective,
+        assumptions=[str(a) for a in (plan.assumptions or [])],
+        risks=[str(r) for r in (plan.risks or [])],
+        affected_components=[str(c) for c in (plan.affected_components or [])],
+        validation_plan=[str(v) for v in (plan.validation_plan or [])],
+        planner=plan.planner,
+        proposed_solution=plan.proposed_solution,
+    )
+
+
+@app.post("/api/goals/{goal_id}/approve-plan", response_model=OkOut)
+def approve_plan(goal_id: str, db: Session = Depends(get_db)) -> OkOut:
+    approval = db.scalars(
+        select(Approval)
+        .where(Approval.goal_id == goal_id, Approval.kind == "approve-plan")
+        .order_by(Approval.created_at.desc())
+    ).first()
+    if approval is None:
+        raise HTTPException(404, "this goal has no pending plan approval")
+    if approval.state != ApprovalState.PENDING:
+        raise HTTPException(409, f"plan approval already {approval.state}")
+    decide_approval(db, approval.id, "approved")
     return OkOut(ok=True)
+
+
+@app.get("/api/tasks/{task_id}", response_model=TaskDetailOut)
+def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskDetailOut:
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(404, "task not found")
+    goal = db.get(Goal, task.goal_id)
+    findings = db.scalars(select(ReviewFinding).where(ReviewFinding.task_id == task_id)).all()
+    run_ids = [run.id for run in task.runs]
+    validations = (
+        db.scalars(select(ValidationResult).where(ValidationResult.run_id.in_(run_ids))).all()
+        if run_ids
+        else []
+    )
+    base = _task_out(task, goal.title if goal else None)
+    return TaskDetailOut(
+        **base.model_dump(),
+        instruction=task.instruction,
+        worktree_path=task.worktree_path,
+        review_verdict=task.review_verdict,
+        validation_results=[
+            ValidationResultOut(
+                kind=v.kind,
+                status=v.status,
+                summary=v.summary,
+                exit_code=v.exit_code,
+                duration_ms=v.duration_ms,
+            )
+            for v in validations
+        ],
+        findings=[
+            FindingOut(
+                id=f.id,
+                severity=f.severity,
+                category=f.category,
+                description=f.description,
+                file=f.file,
+                line=f.line,
+                recommendation=f.recommendation,
+                blocking=f.blocking,
+                resolved=f.resolved,
+                source=f.source,
+                reviewer=f.reviewer,
+            )
+            for f in findings
+        ],
+    )
+
+
+@app.post("/api/tasks/{task_id}/retry", response_model=OkOut)
+def retry_task(task_id: str, db: Session = Depends(get_db)) -> OkOut:
+    """Explicit operator retry of a terminally failed task."""
+    task = db.get(Task, task_id)
+    if task is None:
+        raise HTTPException(404, "task not found")
+    if TaskStatus(task.status) != TaskStatus.FAILED:
+        raise HTTPException(409, f"only failed tasks can be retried (status: {task.status})")
+    task.status = assert_task_transition(TaskStatus.FAILED, TaskStatus.QUEUED)
+    task.max_attempts = task.attempt_count + 1  # grant exactly one more attempt
+    goal = db.get(Goal, task.goal_id)
+    if goal is not None and GoalStatus(goal.status) == GoalStatus.FAILED:
+        goal.status = assert_goal_transition(GoalStatus.FAILED, GoalStatus.PLANNING)
+        goal.status = assert_goal_transition(GoalStatus.PLANNING, GoalStatus.READY)
+    record_audit(db, "task.operator-retry", task_id=task_id, actor="owner")
+    return OkOut(ok=True)
+
+
+# --- pull requests and feedback ---------------------------------------------------
+@app.get("/api/pull-requests", response_model=ListOut[PullRequestOut])
+def list_pull_requests(db: Session = Depends(get_db)) -> ListOut[PullRequestOut]:
+    records = db.scalars(
+        select(PullRequestRecord).order_by(PullRequestRecord.created_at.desc()).limit(50)
+    ).all()
+    return ListOut(
+        items=[
+            PullRequestOut(
+                id=r.id,
+                goal_id=r.goal_id,
+                repository=r.repository,
+                number=r.number,
+                url=r.url,
+                branch=r.branch,
+                state=r.state,
+                updated_at=r.updated_at,
+            )
+            for r in records
+        ]
+    )
+
+
+@app.post("/api/goals/{goal_id}/feedback/import", response_model=FeedbackReportOut)
+def import_feedback(goal_id: str, db: Session = Depends(get_db)) -> FeedbackReportOut:
+    try:
+        report = import_pr_feedback(db, goal_id)
+    except ValueError as exc:
+        raise HTTPException(404, str(exc)) from None
+    return FeedbackReportOut(
+        fetched=report.fetched,
+        actionable=report.actionable,
+        ignored=report.ignored,
+        duplicates=report.duplicates,
+        repair_tasks=report.repair_tasks,
+    )
+
+
+# --- settings -----------------------------------------------------------------
+@app.get("/api/settings", response_model=SettingsOut)
+def get_settings_endpoint() -> SettingsOut:
+    settings = get_settings()
+    return SettingsOut(
+        review_policy=settings.review_policy,
+        planner_mode=settings.planner_mode,
+        max_repair_attempts=settings.max_repair_attempts,
+        task_timeout_seconds=settings.task_timeout_seconds,
+        lease_seconds=settings.lease_seconds,
+        cost_mode=CostModeOut(
+            paid_apis_enabled=False,
+            description=str(DEFAULT_COST_POLICY.describe()["description"]),
+        ),
+    )
