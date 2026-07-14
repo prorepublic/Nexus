@@ -5,19 +5,33 @@ set -euo pipefail
 
 REPO="${1:-prorepublic/Nexus}"
 
+# Plain name=color pairs: macOS ships bash 3.2, which lacks associative arrays.
+LABELS="
+type:goal=1D76DB
+type:feature=0E8A16
+type:bug=D93F0B
+type:architecture=5319E7
+type:security=B60205
+type:documentation=0075CA
+status:ready=C2E0C6
+status:running=FBCA04
+status:blocked=D93F0B
+status:review=BFD4F2
+status:done=0E8A16
+worker:claude=8250DF
+worker:codex=1F883D
+worker:auto=6E7781
+risk:low=DDF4FF
+risk:medium=FFF8C5
+risk:high=FFEBE9
+approval:required=B60205
+"
+
 echo "Bootstrapping Nexus labels on ${REPO}..."
-declare -A LABELS=(
-  ["type:goal"]="1D76DB" ["type:feature"]="0E8A16" ["type:bug"]="D93F0B"
-  ["type:architecture"]="5319E7" ["type:security"]="B60205"
-  ["type:documentation"]="0075CA"
-  ["status:ready"]="C2E0C6" ["status:running"]="FBCA04" ["status:blocked"]="D93F0B"
-  ["status:review"]="BFD4F2" ["status:done"]="0E8A16"
-  ["worker:claude"]="8250DF" ["worker:codex"]="1F883D" ["worker:auto"]="6E7781"
-  ["risk:low"]="DDF4FF" ["risk:medium"]="FFF8C5" ["risk:high"]="FFEBE9"
-  ["approval:required"]="B60205"
-)
-for name in "${!LABELS[@]}"; do
-  gh label create "$name" --repo "$REPO" --color "${LABELS[$name]}" --force >/dev/null \
+for entry in $LABELS; do
+  name="${entry%%=*}"
+  color="${entry##*=}"
+  gh label create "$name" --repo "$REPO" --color "$color" --force >/dev/null \
     && echo "  label: $name"
 done
 
