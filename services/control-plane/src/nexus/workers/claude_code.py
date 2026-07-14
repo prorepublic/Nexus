@@ -6,18 +6,19 @@ non-interactive mode (`claude -p`). Verified against claude 2.1.x:
 - `--allowedTools` for explicit permission rules
 - `--add-dir` restricted to the assigned workspace
 - `--max-turns` for finite autonomy
-- never uses --dangerously-skip-permissions
+- never uses --dangerously-skip-permissions (also refused by the
+  worker-claude execution profile, so a regression cannot slip through)
 
-The adapter degrades gracefully: if the installed CLI rejects a flag, the
-run fails with a structured 'cli-flags' error instead of corrupting state.
+All process execution flows through nexus.execution (ADR-006): streaming
+JSONL events, process-group termination, env filtering, audit records.
 """
 
+import json
 import shutil
-import subprocess
-import threading
 
 from nexus.config import get_settings
 from nexus.domain.enums import TaskKind, WorkerName
+from nexus.execution import get_profile, get_runner
 from nexus.observability import get_logger, redact_text
 from nexus.workers.base import (
     EventCallback,
@@ -41,30 +42,26 @@ class ClaudeCodeAdapter(WorkerAdapter):
 
     def __init__(self, binary: str | None = None) -> None:
         self.binary = binary or get_settings().claude_bin
-        self._procs: dict[str, subprocess.Popen[str]] = {}
-        self._lock = threading.Lock()
 
     # -- health -----------------------------------------------------------
     def health_check(self) -> WorkerHealth:
-        path = shutil.which(self.binary)
-        if path is None:
+        if shutil.which(self.binary) is None:
             return WorkerHealth(
                 name=self.name,
                 installed=False,
                 detail="claude CLI not found on PATH. Install: npm install -g "
                 "@anthropic-ai/claude-code, then run `claude` once to log in.",
             )
-        try:
-            proc = subprocess.run(
-                [path, "--version"], capture_output=True, text=True, timeout=20, check=False
-            )
-            version = proc.stdout.strip() or None
-        except (OSError, subprocess.TimeoutExpired) as exc:
+        result = get_runner().run(
+            get_profile("health-readonly"), [self.binary, "--version"], cwd=get_settings().cache_dir
+        )
+        version = result.stdout.strip() or None
+        if not result.ok:
             return WorkerHealth(
                 name=self.name,
                 installed=True,
                 authenticated=None,
-                detail=f"claude --version failed: {exc}",
+                detail=f"claude --version failed: {result.stderr.strip()[:200]}",
             )
         # Authentication cannot be verified without spending a model turn, so it
         # is reported as unknown rather than assumed (evidence-based reporting).
@@ -74,7 +71,7 @@ class ClaudeCodeAdapter(WorkerAdapter):
             version=version,
             authenticated=None,
             detail="installed; authentication is verified on first live run "
-            "(`nexus worker test claude-code`)",
+            "(`nexus worker test claude-code --live`)",
         )
 
     def capabilities(self) -> WorkerCapabilities:
@@ -98,7 +95,7 @@ class ClaudeCodeAdapter(WorkerAdapter):
     # -- execution --------------------------------------------------------
     def build_argv(self, spec: TaskSpec) -> list[str]:
         tools = READ_ONLY_TOOLS if spec.read_only else WRITE_TOOLS
-        return [
+        argv = [
             self.binary,
             "-p",
             spec.instruction,
@@ -113,6 +110,10 @@ class ClaudeCodeAdapter(WorkerAdapter):
             str(spec.workspace),
             "--no-session-persistence",
         ]
+        schema = spec.context.get("json_schema")
+        if schema:
+            argv += ["--json-schema", json.dumps(schema)]
+        return argv
 
     def execute(self, spec: TaskSpec, on_event: EventCallback | None = None) -> WorkerResult:
         events: list[WorkerEvent] = []
@@ -122,52 +123,71 @@ class ClaudeCodeAdapter(WorkerAdapter):
             if on_event:
                 on_event(event)
 
-        argv = self.build_argv(spec)
         emit(
             WorkerEvent(
                 type="started",
                 message="claude -p (stream-json)",
-                metadata={
-                    "max_turns": spec.max_turns,
-                    "read_only": spec.read_only,
-                },
+                metadata={"max_turns": spec.max_turns, "read_only": spec.read_only},
             )
         )
-        try:
-            proc = subprocess.Popen(
-                argv,
-                cwd=str(spec.workspace),
-                text=True,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-            )
-        except OSError as exc:
+
+        def stream_line(line: str) -> None:
+            for obj in iter_jsonl(line):
+                self._emit_stream_event(obj, emit)
+
+        result = get_runner().run(
+            get_profile("worker-claude"),
+            self.build_argv(spec),
+            cwd=spec.workspace,
+            permitted_roots=[spec.workspace],
+            timeout=spec.timeout_seconds,
+            on_line=stream_line,
+            cancel_key=spec.run_id,
+            run_id=spec.run_id,
+        )
+        if result.error:
             return WorkerResult(
                 ok=False,
-                summary=f"failed to launch claude: {exc}",
+                summary=f"failed to launch claude: {result.error}",
                 error_category="crash",
                 events=events,
             )
-        with self._lock:
-            self._procs[spec.run_id] = proc
-        try:
-            stdout, stderr = proc.communicate(timeout=spec.timeout_seconds)
-        except subprocess.TimeoutExpired:
-            proc.kill()
-            stdout, stderr = proc.communicate()
+        if result.cancelled:
+            emit(WorkerEvent(type="cancelled", message="cancel requested"))
+            return WorkerResult(
+                ok=False, summary="cancelled", error_category="cancelled", events=events
+            )
+        if result.timed_out:
             emit(WorkerEvent(type="error", message="timeout"))
             return WorkerResult(
                 ok=False,
                 summary=f"timed out after {spec.timeout_seconds}s",
                 error_category="timeout",
                 events=events,
-                output_text=redact_text(stdout[-4000:]),
+                output_text=result.stdout[-4000:],
             )
-        finally:
-            with self._lock:
-                self._procs.pop(spec.run_id, None)
+        parsed = self.parse_result(
+            result.stdout, result.stderr, result.exit_code or 0, [], lambda event: None
+        )
+        parsed.events = events
+        return parsed
 
-        return self.parse_result(stdout, stderr, proc.returncode, events, emit)
+    @staticmethod
+    def _emit_stream_event(obj: dict, emit: EventCallback) -> None:
+        obj_type = str(obj.get("type", ""))
+        if obj_type == "assistant":
+            for block in obj.get("message", {}).get("content", []):
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    emit(WorkerEvent(type="tool", message=str(block.get("name", "tool"))))
+        elif obj_type == "result":
+            is_error = bool(obj.get("is_error", False))
+            emit(
+                WorkerEvent(
+                    type="result",
+                    message="error" if is_error else "ok",
+                    metadata={"num_turns": obj.get("num_turns")},
+                )
+            )
 
     def parse_result(
         self,
@@ -180,18 +200,22 @@ class ClaudeCodeAdapter(WorkerAdapter):
         """Translate stream-json output into the neutral WorkerResult."""
         session_ref: str | None = None
         final_text = ""
+        usage: dict[str, object] = {}
         is_error = returncode != 0
         for obj in iter_jsonl(stdout):
             obj_type = str(obj.get("type", ""))
             session_ref = obj.get("session_id", session_ref)
             if obj_type == "assistant":
-                content = obj.get("message", {}).get("content", [])
-                for block in content:
+                for block in obj.get("message", {}).get("content", []):
                     if isinstance(block, dict) and block.get("type") == "tool_use":
                         emit(WorkerEvent(type="tool", message=str(block.get("name", "tool"))))
             elif obj_type == "result":
                 final_text = str(obj.get("result", "") or "")
                 is_error = bool(obj.get("is_error", False)) or is_error
+                usage = {
+                    "num_turns": obj.get("num_turns"),
+                    "duration_ms": obj.get("duration_ms"),
+                }
                 emit(
                     WorkerEvent(
                         type="result",
@@ -221,12 +245,8 @@ class ClaudeCodeAdapter(WorkerAdapter):
             error_category=error_category,
             events=events,
             output_text=redact_text(final_text[-8000:]),
+            usage=usage,
         )
 
     def cancel(self, run_id: str) -> bool:
-        with self._lock:
-            proc = self._procs.get(run_id)
-        if proc is None:
-            return False
-        proc.terminate()
-        return True
+        return get_runner().cancel(run_id)

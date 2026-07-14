@@ -2,17 +2,16 @@
 
 Uses the officially authenticated `gh` CLI (no token handling in Nexus, no
 scraping). Every call goes through a runner function so tests can inject a
-fake; production uses subprocess with argv lists only.
-
-Capabilities: issues, branches (via git push of worktree branches), pull
-requests, PR comments, and label bootstrap. Reading review comments and
-translating them into follow-up tasks is scaffolded (see docs/ROADMAP.md).
+fake; production routes through the centralized execution subsystem with the
+github-readonly / github-write-safe / git-push profiles (ADR-006), which
+refuse merges, approvals, and force pushes at the profile layer.
 """
 
 import json
 import subprocess
 from collections.abc import Callable
 from dataclasses import dataclass
+from pathlib import Path
 
 from nexus.config import get_settings
 from nexus.observability import get_logger
@@ -21,9 +20,51 @@ log = get_logger(__name__)
 
 Runner = Callable[[list[str]], subprocess.CompletedProcess[str]]
 
+_READONLY_VERBS = {
+    ("pr", "view"),
+    ("pr", "list"),
+    ("pr", "diff"),
+    ("pr", "checks"),
+    ("issue", "view"),
+    ("issue", "list"),
+    ("label", "list"),
+    ("run", "list"),
+    ("run", "view"),
+    ("auth", "status"),
+    ("repo", "view"),
+}
+
+
+def _profile_for(argv: list[str]) -> str:
+    executable = Path(argv[0]).name
+    if executable == "git":
+        return "git-push"
+    positional = [token for token in argv[1:] if not token.startswith("-")]
+    pair = tuple(positional[:2])
+    return "github-readonly" if pair in _READONLY_VERBS else "github-write-safe"
+
 
 def _default_runner(argv: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(argv, capture_output=True, text=True, timeout=120, check=False)
+    """Production runner: centralized execution with profile enforcement."""
+    from nexus.execution import get_profile, get_runner
+
+    settings = get_settings()
+    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    cwd = settings.cache_dir
+    roots = [settings.cache_dir]
+    if Path(argv[0]).name == "git" and len(argv) >= 3 and argv[1] == "-C":
+        # `git -C <worktree> push ...`: run inside the worktree so the git-push
+        # profile sees `push` as the subcommand and the cwd is confined.
+        cwd = Path(argv[2])
+        roots = [cwd, settings.workspaces_dir]
+        argv = [argv[0], *argv[3:]]
+    result = get_runner().run(get_profile(_profile_for(argv)), argv, cwd=cwd, permitted_roots=roots)
+    return subprocess.CompletedProcess(
+        argv,
+        result.exit_code if result.exit_code is not None else 1,
+        result.stdout,
+        result.stderr or (result.error or ""),
+    )
 
 
 class GitHubError(Exception):

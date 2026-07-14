@@ -65,6 +65,9 @@ class WorkerResult:
     error_category: str | None = None  # timeout|auth|limit|crash|policy|unknown
     events: list[WorkerEvent] = field(default_factory=list)
     output_text: str = ""
+    # CLI-reported usage where officially available (turns, tokens, duration).
+    # Never fabricated; empty when the CLI does not report it.
+    usage: dict[str, Any] = field(default_factory=dict)
 
 
 EventCallback = Callable[[WorkerEvent], None]

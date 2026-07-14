@@ -1,14 +1,7 @@
-from pathlib import Path
-
 import pytest
 
 from nexus.domain.enums import Autonomy, Risk
 from nexus.policies.approval import approval_required
-from nexus.policies.command import (
-    CommandExecutor,
-    CommandPolicy,
-    CommandPolicyError,
-)
 from nexus.policies.cost import DEFAULT_COST_POLICY, WorkerBudgetState
 
 
@@ -61,75 +54,6 @@ class TestApprovalPolicy:
 
     def test_unknown_low_risk_bounded_proceeds(self):
         assert not approval_required("mystery-action", Risk.LOW).required
-
-
-class TestCommandPolicy:
-    def test_allowlisted_command_runs(self, tmp_path: Path):
-        executor = CommandExecutor(CommandPolicy(workspace=tmp_path))
-        result = executor.run(["echo", "hello"], cwd=tmp_path)
-        assert result.ok
-        assert "hello" in result.stdout
-
-    def test_unlisted_executable_refused(self, tmp_path: Path):
-        executor = CommandExecutor(CommandPolicy(workspace=tmp_path))
-        with pytest.raises(CommandPolicyError, match="not allowlisted"):
-            executor.run(["curl", "http://example.com"], cwd=tmp_path)
-
-    @pytest.mark.parametrize(
-        "argv",
-        [
-            ["git", "push", "--force"],
-            ["git", "push", "origin", "main", "--force"],
-            ["git", "push", "-f"],
-            ["git", "reset", "--hard"],
-            ["rm", "-rf", "/"],
-        ],
-    )
-    def test_destructive_commands_refused(self, argv, tmp_path: Path):
-        executor = CommandExecutor(CommandPolicy(workspace=tmp_path))
-        with pytest.raises(CommandPolicyError, match="destructive|not allowlisted"):
-            executor.run(argv, cwd=tmp_path)
-
-    def test_normal_git_push_is_not_flagged(self, tmp_path: Path):
-        policy = CommandPolicy(workspace=tmp_path)
-        policy.check(["git", "push", "origin", "feature-branch"], cwd=tmp_path)
-
-    def test_cwd_escape_refused(self, tmp_path: Path):
-        workspace = tmp_path / "ws"
-        workspace.mkdir()
-        executor = CommandExecutor(CommandPolicy(workspace=workspace))
-        with pytest.raises(CommandPolicyError, match="escapes"):
-            executor.run(["echo", "x"], cwd=tmp_path)
-
-    def test_timeout_enforced(self, tmp_path: Path):
-        executor = CommandExecutor(
-            CommandPolicy(
-                workspace=tmp_path, timeout_seconds=1, allowed_executables=frozenset({"python3"})
-            )
-        )
-        result = executor.run(["python3", "-c", "import time; time.sleep(5)"], cwd=tmp_path)
-        assert result.timed_out
-        assert not result.ok
-
-    def test_output_capped(self, tmp_path: Path):
-        executor = CommandExecutor(
-            CommandPolicy(
-                workspace=tmp_path, max_output_bytes=100, allowed_executables=frozenset({"python3"})
-            )
-        )
-        result = executor.run(["python3", "-c", "print('x' * 10000)"], cwd=tmp_path)
-        assert result.truncated
-        assert len(result.stdout) < 200
-
-    def test_secret_redaction_in_output(self, tmp_path: Path):
-        executor = CommandExecutor(
-            CommandPolicy(workspace=tmp_path, allowed_executables=frozenset({"python3"}))
-        )
-        result = executor.run(
-            ["python3", "-c", "print('token: ghp_" + "a" * 36 + "')"], cwd=tmp_path
-        )
-        assert "ghp_" not in result.stdout
-        assert "[REDACTED]" in result.stdout
 
 
 class TestCostPolicy:

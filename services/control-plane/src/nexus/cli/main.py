@@ -53,10 +53,18 @@ def doctor() -> None:
 @app.command()
 def bootstrap() -> None:
     """Apply migrations and seed baseline records."""
-    import subprocess
+    from nexus.execution import get_profile, get_runner
 
     cp_dir = Path(__file__).resolve().parents[3]
-    subprocess.run(["uv", "run", "alembic", "upgrade", "head"], cwd=cp_dir, check=True)
+    migration = get_runner().run(
+        get_profile("migration-local"),
+        ["uv", "run", "alembic", "upgrade", "head"],
+        cwd=cp_dir,
+        permitted_roots=[cp_dir],
+    )
+    if not migration.ok:
+        typer.echo(f"Migration failed: {migration.stderr[-500:]}")
+        raise typer.Exit(1)
     from nexus.db.base import session_scope
     from nexus.db.models import User, Worker
 

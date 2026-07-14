@@ -1,13 +1,18 @@
-"""`nexus doctor`: environment health report."""
+"""`nexus doctor`: environment health report.
+
+All checks execute through the health-readonly / git-readonly execution
+profiles (ADR-006); doctor never launches subprocesses directly.
+"""
 
 import platform
 import shutil
-import subprocess
 from dataclasses import dataclass
+from pathlib import Path
 
 from sqlalchemy import text
 
 from nexus.config import get_settings
+from nexus.execution import get_profile, get_runner
 from nexus.workers.registry import get_registry
 
 
@@ -19,17 +24,20 @@ class Check:
     warn: bool = False  # ok=False but non-blocking
 
 
+def _health_run(argv: list[str], cwd: Path | None = None, profile: str = "health-readonly"):
+    settings = get_settings()
+    settings.cache_dir.mkdir(parents=True, exist_ok=True)
+    return get_runner().run(get_profile(profile), argv, cwd=cwd or settings.cache_dir)
+
+
 def _version_of(binary: str, *args: str) -> str | None:
-    path = shutil.which(binary)
-    if path is None:
+    if shutil.which(binary) is None:
         return None
-    try:
-        proc = subprocess.run(
-            [path, *args], capture_output=True, text=True, timeout=15, check=False
-        )
-        return (proc.stdout or proc.stderr).strip().splitlines()[0][:80]
-    except (OSError, subprocess.TimeoutExpired, IndexError):
+    result = _health_run([binary, *args])
+    combined = (result.stdout or result.stderr).strip()
+    if not combined:
         return "installed (version unknown)"
+    return combined.splitlines()[0][:80]
 
 
 def run_checks() -> list[Check]:
@@ -52,18 +60,13 @@ def run_checks() -> list[Check]:
         version = _version_of(binary, *args)
         checks.append(Check(name, version is not None, version or "not found", warn=name in {"uv"}))
 
-    gh = shutil.which("gh")
-    if gh:
-        proc = subprocess.run(
-            [gh, "auth", "status"], capture_output=True, text=True, timeout=20, check=False
-        )
+    if shutil.which("gh"):
+        auth_result = _health_run(["gh", "auth", "status"])
         checks.append(
             Check(
                 "github-auth",
-                proc.returncode == 0,
-                "authenticated"
-                if proc.returncode == 0
-                else "not authenticated (run `gh auth login`)",
+                auth_result.ok,
+                "authenticated" if auth_result.ok else "not authenticated (run `gh auth login`)",
             )
         )
 
@@ -99,13 +102,16 @@ def run_checks() -> list[Check]:
     )
 
     # Repository cleanliness of the current directory, when it is a git repo.
-    proc = subprocess.run(
-        ["git", "rev-parse", "--is-inside-work-tree"], capture_output=True, text=True, check=False
+    cwd = Path.cwd()
+    inside = get_runner().run(
+        get_profile("git-readonly"), ["git", "rev-parse", "--is-inside-work-tree"], cwd=cwd
     )
-    if proc.returncode == 0 and proc.stdout.strip() == "true":
-        dirty = subprocess.run(
-            ["git", "status", "--porcelain"], capture_output=True, text=True, check=False
-        ).stdout.strip()
+    if inside.ok and inside.stdout.strip() == "true":
+        dirty = (
+            get_runner()
+            .run(get_profile("git-readonly"), ["git", "status", "--porcelain"], cwd=cwd)
+            .stdout.strip()
+        )
         checks.append(
             Check(
                 "repo-clean",
