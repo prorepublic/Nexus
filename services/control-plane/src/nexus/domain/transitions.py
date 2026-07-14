@@ -54,11 +54,17 @@ TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
     TaskStatus.PENDING: {TaskStatus.READY, TaskStatus.BLOCKED, TaskStatus.CANCELLED},
     TaskStatus.READY: {TaskStatus.QUEUED, TaskStatus.BLOCKED, TaskStatus.CANCELLED},
     TaskStatus.QUEUED: {TaskStatus.RUNNING, TaskStatus.CANCELLED},
-    TaskStatus.RUNNING: {TaskStatus.VALIDATING, TaskStatus.FAILED, TaskStatus.CANCELLED},
+    TaskStatus.RUNNING: {
+        TaskStatus.VALIDATING,
+        TaskStatus.BLOCKED,  # mid-execution approval gate discovered
+        TaskStatus.FAILED,
+        TaskStatus.CANCELLED,
+    },
     TaskStatus.VALIDATING: {
         TaskStatus.REVIEW,
         TaskStatus.REPAIRING,
         TaskStatus.COMPLETED,
+        TaskStatus.BLOCKED,  # untrusted-script approval gate
         TaskStatus.FAILED,
     },
     TaskStatus.REPAIRING: {
@@ -67,7 +73,12 @@ TASK_TRANSITIONS: dict[TaskStatus, set[TaskStatus]] = {
         TaskStatus.FAILED,
         TaskStatus.CANCELLED,
     },
-    TaskStatus.REVIEW: {TaskStatus.COMPLETED, TaskStatus.REPAIRING, TaskStatus.FAILED},
+    TaskStatus.REVIEW: {
+        TaskStatus.COMPLETED,
+        TaskStatus.REPAIRING,
+        TaskStatus.BLOCKED,
+        TaskStatus.FAILED,
+    },
     TaskStatus.BLOCKED: {TaskStatus.READY, TaskStatus.CANCELLED, TaskStatus.FAILED},
     TaskStatus.COMPLETED: set(),
     TaskStatus.FAILED: {TaskStatus.QUEUED},  # explicit operator retry only

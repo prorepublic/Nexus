@@ -27,6 +27,25 @@ class Settings(BaseSettings):
     command_timeout_seconds: int = 600
     max_output_bytes: int = 512_000
 
+    # Review policy: required | preferred | disabled (ADR-009)
+    # - required: implementation tasks cannot complete without an independent
+    #   review from a different worker;
+    # - preferred: review runs when a distinct healthy worker exists, otherwise
+    #   the single-worker fallback is recorded and the task may proceed;
+    # - disabled: no agent review (tests / explicit owner policy only).
+    review_policy: str = "preferred"
+    max_review_attempts: int = 2
+
+    # Queue reliability (ADR-010)
+    lease_seconds: int = 2700  # task_timeout + validation headroom
+    heartbeat_seconds: int = 30
+    worker_cooldown_seconds: int = 900  # rate-limited worker back-off
+
+    # Live planning (ADR-008): auto = live when available, deterministic
+    # otherwise; deterministic|live to force.
+    planner_mode: str = "auto"
+    planning_timeout_seconds: int = 600
+
     # Worker CLI binaries (overridable for tests)
     claude_bin: str = "claude"
     codex_bin: str = "codex"

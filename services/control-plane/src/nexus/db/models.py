@@ -49,7 +49,17 @@ class Repository(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("repo"))
     name: Mapped[str] = mapped_column(String(300), unique=True)  # e.g. owner/repo or local path
     local_path: Mapped[str | None] = mapped_column(String(1000))
+    remote_url: Mapped[str | None] = mapped_column(String(500))
+    github_slug: Mapped[str | None] = mapped_column(String(300))  # owner/repo
     default_branch: Mapped[str] = mapped_column(String(200), default="main")
+    trust_level: Mapped[str] = mapped_column(String(30), default="untrusted")
+    validation_profile: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    languages: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    package_managers: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    protected_paths: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    onboarded: Mapped[bool] = mapped_column(Boolean, default=False)
+    last_inspected_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    meta: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
 
 class Goal(Base, TimestampMixin):
@@ -64,6 +74,7 @@ class Goal(Base, TimestampMixin):
     requested_worker: Mapped[str | None] = mapped_column(String(40))
     acceptance_criteria: Mapped[list[Any]] = mapped_column(JSON, default=list)
     constraints: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    plan_mode: Mapped[str] = mapped_column(String(20), default="auto")  # auto|live|manual
     created_by: Mapped[str | None] = mapped_column(ForeignKey("users.id"))
 
     repository: Mapped[Repository | None] = relationship()
@@ -105,6 +116,10 @@ class Task(Base, TimestampMixin):
     max_attempts: Mapped[int] = mapped_column(Integer, default=3)
     validation_spec: Mapped[list[Any]] = mapped_column(JSON, default=list)
     expected_files: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    scope_globs: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    context: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)  # repair context
+    idempotency_key: Mapped[str | None] = mapped_column(String(120), unique=True)
+    review_verdict: Mapped[str | None] = mapped_column(String(30))
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
@@ -153,6 +168,11 @@ class Run(Base, TimestampMixin):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     cancel_requested: Mapped[bool] = mapped_column(Boolean, default=False)
+    purpose: Mapped[str] = mapped_column(String(30), default="implementation")  # |review|planning
+    orchestrator_id: Mapped[str | None] = mapped_column(String(80))
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    heartbeat_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    usage: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
     task: Mapped[Task] = relationship(back_populates="runs")
     events: Mapped[list["RunEvent"]] = relationship(back_populates="run")
@@ -211,6 +231,9 @@ class Prompt(Base, TimestampMixin):
     run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), index=True)
     role: Mapped[str] = mapped_column(String(30), default="task")
     content: Mapped[str] = mapped_column(Text)  # redacted before persistence
+    # What context was packaged into this prompt and where it came from.
+    context_manifest: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    version: Mapped[str] = mapped_column(String(20), default="v1")
 
 
 class CommandExecution(Base):
@@ -226,13 +249,36 @@ class CommandExecution(Base):
     policy_decision: Mapped[str] = mapped_column(String(20), default="allowed")
 
 
+class ReviewFinding(Base, TimestampMixin):
+    __tablename__ = "review_findings"
+    id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("find"))
+    task_id: Mapped[str] = mapped_column(ForeignKey("tasks.id"), index=True)
+    run_id: Mapped[str | None] = mapped_column(ForeignKey("runs.id"), index=True)
+    reviewer: Mapped[str] = mapped_column(String(40))
+    severity: Mapped[str] = mapped_column(String(20))  # critical|high|medium|low|info
+    category: Mapped[str] = mapped_column(String(60), default="correctness")
+    description: Mapped[str] = mapped_column(Text)
+    file: Mapped[str | None] = mapped_column(String(1000))
+    line: Mapped[str | None] = mapped_column(String(40))  # line or range
+    recommendation: Mapped[str] = mapped_column(Text, default="")
+    blocking: Mapped[bool] = mapped_column(Boolean, default=False)
+    resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    source: Mapped[str] = mapped_column(String(30), default="agent-review")  # |pr-comment
+
+
 class ValidationResult(Base, TimestampMixin):
     __tablename__ = "validation_results"
     id: Mapped[str] = mapped_column(String(40), primary_key=True, default=lambda: new_id("val"))
     run_id: Mapped[str] = mapped_column(ForeignKey("runs.id"), index=True)
     kind: Mapped[str] = mapped_column(String(30))  # ValidationKind
+    status: Mapped[str] = mapped_column(String(20), default="failed")  # ValidationStatus
     passed: Mapped[bool] = mapped_column(Boolean)
     summary: Mapped[str] = mapped_column(Text, default="")
+    command: Mapped[list[Any]] = mapped_column(JSON, default=list)
+    profile: Mapped[str] = mapped_column(String(60), default="")
+    exit_code: Mapped[int | None] = mapped_column(Integer)
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    output_tail: Mapped[str] = mapped_column(Text, default="")
 
 
 class PullRequestRecord(Base, TimestampMixin):
