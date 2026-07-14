@@ -82,9 +82,73 @@ class TaskKind(StrEnum):
 
 class ValidationKind(StrEnum):
     TESTS = "tests"
+    INTEGRATION_TESTS = "integration-tests"
     LINT = "lint"
+    FORMAT = "format"
     TYPECHECK = "typecheck"
     BUILD = "build"
     SECURITY = "security"
+    SECRET_SCAN = "secret-scan"  # noqa: S105 (validation kind, not a password)
+    DEPENDENCY_AUDIT = "dependency-audit"
+    MIGRATION_CHECK = "migration-check"
     FILES_EXIST = "files-exist"
+    CHANGED_SCOPE = "changed-scope"
     ACCEPTANCE = "acceptance"
+
+
+class ValidationStatus(StrEnum):
+    PASSED = "passed"
+    FAILED = "failed"
+    SKIPPED = "skipped"  # explicitly not requested; NEVER equivalent to passed
+    BLOCKED = "blocked"  # requested but cannot run (trust, missing command/tool)
+    ERROR = "error"  # infrastructure failure while running the check
+
+
+class TrustLevel(StrEnum):
+    UNTRUSTED = "untrusted"
+    REVIEWED = "reviewed"
+    TRUSTED_LOCAL = "trusted-local"
+    TRUSTED_OWNER_APPROVED = "trusted-owner-approved"
+
+
+# Trust levels whose repository-defined scripts may execute on the host.
+HOST_EXECUTION_TRUST = {TrustLevel.TRUSTED_LOCAL, TrustLevel.TRUSTED_OWNER_APPROVED}
+
+
+class FailureCategory(StrEnum):
+    WORKER_CRASH = "worker-crash"
+    AUTH = "auth"
+    RATE_LIMIT = "rate-limit"
+    TIMEOUT = "timeout"
+    INVALID_OUTPUT = "invalid-output"
+    POLICY_VIOLATION = "policy-violation"
+    VALIDATION_FAILED = "validation-failed"
+    REVIEW_REJECTED = "review-rejected"
+    MERGE_CONFLICT = "merge-conflict"
+    GIT_FAILURE = "git-failure"
+    TOOL_UNAVAILABLE = "tool-unavailable"
+    INFRASTRUCTURE = "infrastructure"
+    OWNER_DENIED = "owner-denied"
+    SIMULATED = "simulated"
+    CANCELLED = "cancelled"
+    UNKNOWN = "unknown"
+
+
+# Categories where a retry can plausibly change the outcome. Deterministic
+# failures (policy, config, owner denial) never consume model usage on retry.
+RETRYABLE_FAILURES = {
+    FailureCategory.WORKER_CRASH,
+    FailureCategory.TIMEOUT,
+    FailureCategory.INVALID_OUTPUT,
+    FailureCategory.VALIDATION_FAILED,
+    FailureCategory.REVIEW_REJECTED,
+    FailureCategory.MERGE_CONFLICT,
+    FailureCategory.SIMULATED,
+    FailureCategory.UNKNOWN,
+}
+
+
+class ReviewVerdict(StrEnum):
+    APPROVED = "approved"
+    CHANGES_REQUESTED = "changes-requested"
+    BLOCKED = "blocked"
