@@ -57,10 +57,50 @@ export type Task = {
   status: TaskStatus;
   worker: string | null;
   reviewer: string | null;
+  review_verdict: string | null;
   risk: TaskRisk;
   attempt_count: number;
   branch: string | null;
   created_at: string;
+};
+
+export type ValidationResultStatus =
+  | "passed"
+  | "failed"
+  | "skipped"
+  | "blocked"
+  | "error";
+
+export type ValidationResult = {
+  kind: string;
+  status: ValidationResultStatus;
+  summary: string;
+  exit_code: number | null;
+  duration_ms: number | null;
+};
+
+export type FindingSeverity = "critical" | "high" | "medium" | "low" | "info";
+
+export type Finding = {
+  id: string;
+  severity: FindingSeverity;
+  category: string;
+  description: string;
+  file: string | null;
+  line: string | null;
+  recommendation: string;
+  blocking: boolean;
+  resolved: boolean;
+  source: string;
+  reviewer: string;
+};
+
+export type TaskDetail = Task & {
+  goal_id?: string;
+  instruction: string;
+  worktree_path: string | null;
+  validation_results: ValidationResult[];
+  findings: Finding[];
 };
 
 export type TaskWithGoal = Task & {
@@ -111,6 +151,66 @@ export type Approval = {
   risk: string;
   requested_at: string;
   state: ApprovalState;
+  goal_id?: string | null;
+  task_id?: string | null;
+};
+
+export type TrustLevel =
+  | "untrusted"
+  | "reviewed"
+  | "trusted-local"
+  | "trusted-owner-approved";
+
+export type Repository = {
+  id: string;
+  name: string;
+  local_path: string | null;
+  github_slug: string | null;
+  default_branch: string;
+  trust_level: TrustLevel;
+  onboarded: boolean;
+  languages: string[];
+  validation_kinds: string[];
+};
+
+export type GoalPlan = {
+  id: string;
+  goal_id: string;
+  objective: string;
+  assumptions: string[];
+  risks: string[];
+  affected_components: string[];
+  validation_plan: string[];
+  planner: string;
+  proposed_solution: string;
+};
+
+export type PullRequest = {
+  id: string;
+  goal_id: string;
+  repository: string;
+  number: number | null;
+  url: string | null;
+  branch: string;
+  state: string;
+  updated_at: string;
+};
+
+export type FeedbackImportResult = {
+  fetched: number;
+  actionable: number;
+  ignored: number;
+  duplicates: number;
+  repair_tasks: string[];
+};
+
+export type Settings = {
+  review_policy: string;
+  planner_mode: string;
+  max_repair_attempts: number;
+  task_timeout_seconds: number;
+  lease_seconds: number;
+  cost_mode: CostMode;
 };
 
 export type Health = {
@@ -142,6 +242,8 @@ export type SystemStatus = {
 
 export type RequestedWorker = "claude-code" | "codex-cli" | "fake" | null;
 
+export type PlanMode = "auto" | "live" | "deterministic";
+
 export type CreateGoalInput = {
   title: string;
   description: string;
@@ -151,6 +253,7 @@ export type CreateGoalInput = {
   requested_worker?: RequestedWorker;
   priority?: GoalPriority;
   autonomy?: "manual" | "bounded";
+  plan_mode?: PlanMode;
 };
 
 /* --------------------------------- errors --------------------------------- */
@@ -180,6 +283,7 @@ export class NexusUnreachableError extends Error {
 /* --------------------------------- client --------------------------------- */
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
+  const method = (init?.method ?? "GET").toUpperCase();
   let res: Response;
   try {
     res = await fetch(`${API_BASE}${path}`, {
@@ -187,6 +291,9 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       cache: "no-store",
       headers: {
         "Content-Type": "application/json",
+        // State-changing requests must identify the client or the control
+        // plane rejects them with 403.
+        ...(method === "POST" ? { "X-Nexus-Client": "dashboard" } : {}),
         ...(init?.headers ?? {}),
       },
     });
@@ -262,6 +369,56 @@ export const api = {
       `/api/runs/${encodeURIComponent(id)}/cancel`,
       { method: "POST" },
     ),
+
+  getTask: (id: string): Promise<TaskDetail> =>
+    request<TaskDetail>(`/api/tasks/${encodeURIComponent(id)}`),
+
+  retryTask: (id: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>(
+      `/api/tasks/${encodeURIComponent(id)}/retry`,
+      { method: "POST" },
+    ),
+
+  listRepositories: (): Promise<{ items: Repository[] }> =>
+    request<{ items: Repository[] }>("/api/repositories"),
+
+  registerRepository: (input: {
+    source: string;
+    name?: string;
+  }): Promise<Repository> =>
+    request<Repository>("/api/repositories", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
+
+  setRepositoryTrust: (id: string, level: TrustLevel): Promise<Repository> =>
+    request<Repository>(
+      `/api/repositories/${encodeURIComponent(id)}/trust`,
+      {
+        method: "POST",
+        body: JSON.stringify({ level }),
+      },
+    ),
+
+  getGoalPlan: (id: string): Promise<GoalPlan> =>
+    request<GoalPlan>(`/api/goals/${encodeURIComponent(id)}/plan`),
+
+  approveGoalPlan: (id: string): Promise<{ ok: boolean }> =>
+    request<{ ok: boolean }>(
+      `/api/goals/${encodeURIComponent(id)}/approve-plan`,
+      { method: "POST" },
+    ),
+
+  listPullRequests: (): Promise<{ items: PullRequest[] }> =>
+    request<{ items: PullRequest[] }>("/api/pull-requests"),
+
+  importGoalFeedback: (goalId: string): Promise<FeedbackImportResult> =>
+    request<FeedbackImportResult>(
+      `/api/goals/${encodeURIComponent(goalId)}/feedback/import`,
+      { method: "POST" },
+    ),
+
+  getSettings: (): Promise<Settings> => request<Settings>("/api/settings"),
 
   listApprovals: (
     state: ApprovalState = "pending",

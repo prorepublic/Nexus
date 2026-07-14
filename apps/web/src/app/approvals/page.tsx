@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import Link from "next/link";
 import { api, type Approval } from "@/lib/api";
 import { usePolling } from "@/lib/usePolling";
 import { Card } from "@/components/Card";
@@ -50,6 +51,26 @@ function ApprovalItem({
       <p className="mt-2 text-sm leading-relaxed text-zinc-400">
         {approval.description}
       </p>
+      {approval.goal_id || approval.task_id ? (
+        <p className="mt-1.5 flex flex-wrap gap-x-4 font-mono text-xs text-zinc-600">
+          {approval.goal_id ? (
+            <Link
+              href={`/goals/${approval.goal_id}`}
+              className="hover:text-sky-300"
+            >
+              goal {approval.goal_id}
+            </Link>
+          ) : null}
+          {approval.task_id ? (
+            <Link
+              href={`/tasks/${approval.task_id}`}
+              className="hover:text-sky-300"
+            >
+              task {approval.task_id}
+            </Link>
+          ) : null}
+        </p>
+      ) : null}
       {error ? (
         <p role="alert" className="mt-2 text-xs text-red-400">
           {error}

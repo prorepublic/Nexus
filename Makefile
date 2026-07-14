@@ -51,6 +51,7 @@ typecheck: ## Type-check Python and TypeScript
 	cd $(WEB_DIR) && npx tsc --noEmit
 
 security: ## Dependency and secret checks (free, local)
+	./scripts/secret-scan.sh
 	cd $(CP_DIR) && $(UV) run pip-audit --skip-editable || true
 	cd $(WEB_DIR) && npm audit --audit-level=high || true
 

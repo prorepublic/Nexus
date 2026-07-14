@@ -18,6 +18,8 @@ export default function DashboardPage() {
   const goals = usePolling(() => api.listGoals(20), 5000);
   const runs = usePolling(() => api.listRuns(50), 5000);
   const approvals = usePolling(() => api.listApprovals("pending"), 5000);
+  const repos = usePolling(api.listRepositories, 10000);
+  const pullRequests = usePolling(api.listPullRequests, 10000);
 
   const unreachable =
     system.unreachable &&
@@ -108,6 +110,40 @@ export default function DashboardPage() {
           <p className="mt-2 text-xs text-zinc-500">
             {system.data?.cost_mode.description ??
               "Workers run through locally installed subscription CLIs."}
+          </p>
+        </Card>
+
+        <Card title="Repositories">
+          <div className="flex items-center justify-between">
+            <span className="text-3xl font-semibold text-zinc-100">
+              {repos.data?.items.length ?? "—"}
+            </span>
+            <Link
+              href="/repositories"
+              className="text-sm text-sky-400 hover:text-sky-300"
+            >
+              Manage
+            </Link>
+          </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Registered repositories workers can operate on.
+          </p>
+        </Card>
+
+        <Card title="Pull requests">
+          <div className="flex items-center justify-between">
+            <span className="text-3xl font-semibold text-zinc-100">
+              {pullRequests.data?.items.length ?? "—"}
+            </span>
+            <Link
+              href="/pull-requests"
+              className="text-sm text-sky-400 hover:text-sky-300"
+            >
+              View
+            </Link>
+          </div>
+          <p className="mt-2 text-xs text-zinc-500">
+            Pull requests opened by goals, with review feedback import.
           </p>
         </Card>
       </div>

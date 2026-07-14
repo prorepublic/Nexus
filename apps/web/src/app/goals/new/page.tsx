@@ -3,8 +3,11 @@
 import { useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { api } from "@/lib/api";
+import { usePolling } from "@/lib/usePolling";
 import {
   LIMITS,
+  PLAN_MODE_OPTIONS,
   validateGoalForm,
   WORKER_OPTIONS,
   type GoalFormErrors,
@@ -22,6 +25,7 @@ const INITIAL_VALUES: GoalFormValues = {
   requested_worker: "auto",
   priority: "normal",
   autonomy: "manual",
+  plan_mode: "auto",
 };
 
 const inputClass =
@@ -96,6 +100,7 @@ function DynamicList({
 
 export default function NewGoalPage() {
   const router = useRouter();
+  const repos = usePolling(api.listRepositories, 15000);
   const [values, setValues] = useState<GoalFormValues>(INITIAL_VALUES);
   const [errors, setErrors] = useState<GoalFormErrors>({});
   const [formError, setFormError] = useState<string | null>(null);
@@ -202,16 +207,29 @@ export default function NewGoalPage() {
               <label htmlFor="goal-repository" className={labelClass}>
                 Repository <span className="text-zinc-600">(optional)</span>
               </label>
-              <input
+              <select
                 id="goal-repository"
-                type="text"
-                maxLength={LIMITS.repository}
                 value={values.repository}
                 onChange={(e) => set("repository", e.target.value)}
-                placeholder="/path/to/repo or org/repo"
                 className={inputClass}
                 aria-invalid={Boolean(errors.repository)}
-              />
+              >
+                <option value="">No repository</option>
+                {repos.data?.items.map((repo) => (
+                  <option key={repo.id} value={repo.name}>
+                    {repo.name}
+                  </option>
+                ))}
+              </select>
+              <p className="mt-1 text-xs text-zinc-500">
+                {repos.data
+                  ? repos.data.items.length === 0
+                    ? "No repositories registered yet. Register one on the Repositories page to target it."
+                    : "Goals with a repository must reference a registered repository."
+                  : repos.unreachable
+                    ? "Repository list unavailable while the control plane is unreachable."
+                    : "Loading registered repositories…"}
+              </p>
               {errors.repository ? (
                 <p className={errorClass}>{errors.repository}</p>
               ) : null}
@@ -270,7 +288,29 @@ export default function NewGoalPage() {
               </div>
             </fieldset>
 
-            <div className="grid gap-4 sm:grid-cols-2">
+            <div className="grid gap-4 sm:grid-cols-3">
+              <div>
+                <label htmlFor="goal-plan-mode" className={labelClass}>
+                  Plan mode
+                </label>
+                <select
+                  id="goal-plan-mode"
+                  value={values.plan_mode}
+                  onChange={(e) =>
+                    set(
+                      "plan_mode",
+                      e.target.value as GoalFormValues["plan_mode"],
+                    )
+                  }
+                  className={inputClass}
+                >
+                  {PLAN_MODE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
               <div>
                 <label htmlFor="goal-priority" className={labelClass}>
                   Priority

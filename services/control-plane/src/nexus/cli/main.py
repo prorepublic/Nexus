@@ -241,34 +241,57 @@ def goal_create(
     ),
     criteria: list[str] = typer.Option([], "--criterion", "-c"),
     priority: str = typer.Option("normal", "--priority"),
+    plan_mode: str = typer.Option(
+        "auto", "--plan-mode", help="auto | live | deterministic"
+    ),
+    autonomy: str = typer.Option("bounded", "--autonomy", help="bounded | manual"),
+    constraint: list[str] = typer.Option([], "--constraint"),
 ) -> None:
-    """Create a goal and plan it into tasks."""
+    """Create a goal and plan it into tasks (live AI planning by default when a
+    live worker is available)."""
     from nexus.db.base import session_scope
     from nexus.db.models import Goal, Repository
     from nexus.services.events import record_audit
-    from nexus.services.planner import DeterministicPlanner, create_plan
+    from nexus.services.planner import PlanningError, create_plan, select_planner
 
     with session_scope() as session:
         repo = None
         if repository:
             repo = session.scalars(
                 select(Repository).where(Repository.name == repository)
-            ).first() or Repository(name=repository)
-            session.add(repo)
-            session.flush()
+            ).first()
+            if repo is None:
+                typer.echo(
+                    f"repository '{repository}' is not registered; run "
+                    f"`nexus repo add {repository}` first"
+                )
+                raise typer.Exit(1)
         goal = Goal(
             title=title,
             description=description,
             priority=priority,
             requested_worker=worker,
             acceptance_criteria=list(criteria),
+            constraints=list(constraint),
+            plan_mode=plan_mode,
+            autonomy=autonomy,
             repository_id=repo.id if repo else None,
         )
         session.add(goal)
         session.flush()
-        create_plan(session, goal, DeterministicPlanner())
-        record_audit(session, "goal.created", goal_id=goal.id, actor="owner-cli")
-        typer.echo(f"Created {goal.id} with {len(goal.tasks)} task(s); status: {goal.status}")
+        try:
+            planner = select_planner(goal)
+            create_plan(session, goal, planner)
+        except PlanningError as exc:
+            typer.echo(f"Planning failed: {exc}")
+            raise typer.Exit(1) from None
+        record_audit(session, "goal.created", goal_id=goal.id, actor="owner-cli",
+                     metadata={"plan_mode": plan_mode})
+        typer.echo(
+            f"Created {goal.id} with {len(goal.tasks)} task(s) "
+            f"(planner: {goal.plan.planner if goal.plan else 'unknown'}); "
+            f"status: {goal.status}"
+        )
 
 
 @goal_app.command("list")

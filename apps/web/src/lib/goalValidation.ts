@@ -1,4 +1,9 @@
-import type { CreateGoalInput, GoalPriority, RequestedWorker } from "./api";
+import type {
+  CreateGoalInput,
+  GoalPriority,
+  PlanMode,
+  RequestedWorker,
+} from "./api";
 
 export const LIMITS = {
   title: 200,
@@ -35,6 +40,15 @@ export const WORKER_OPTIONS: Array<{
   },
 ];
 
+export const PLAN_MODE_OPTIONS: Array<{
+  value: PlanMode;
+  label: string;
+}> = [
+  { value: "auto", label: "Automatic" },
+  { value: "live", label: "Live AI planning" },
+  { value: "deterministic", label: "Deterministic" },
+];
+
 export type GoalFormValues = {
   title: string;
   description: string;
@@ -44,6 +58,7 @@ export type GoalFormValues = {
   requested_worker: "auto" | "claude-code" | "codex-cli" | "fake";
   priority: GoalPriority;
   autonomy: "manual" | "bounded";
+  plan_mode: PlanMode;
 };
 
 export type GoalFormErrors = Partial<
@@ -103,5 +118,6 @@ export function toCreateGoalInput(values: GoalFormValues): CreateGoalInput {
     requested_worker,
     priority: values.priority,
     autonomy: values.autonomy,
+    plan_mode: values.plan_mode,
   };
 }
