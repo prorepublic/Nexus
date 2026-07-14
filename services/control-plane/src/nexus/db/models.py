@@ -246,7 +246,7 @@ class CommandExecution(Base):
     exit_code: Mapped[int | None] = mapped_column(Integer)
     duration_ms: Mapped[int | None] = mapped_column(Integer)
     output_truncated: Mapped[bool] = mapped_column(Boolean, default=False)
-    policy_decision: Mapped[str] = mapped_column(String(20), default="allowed")
+    policy_decision: Mapped[str] = mapped_column(String(60), default="allowed")
 
 
 class ReviewFinding(Base, TimestampMixin):

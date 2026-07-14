@@ -338,10 +338,18 @@ def select_planner(goal: Goal, registry=None) -> Planner:
     if mode == "live":
         registry = registry or get_registry()
         from nexus.domain.enums import WorkerName
+        from nexus.workers.registry import disabled_worker_names
 
-        adapter = registry.get(WorkerName.CLAUDE_CODE)
-        if adapter.health_check().available:
-            return LivePlanner(adapter)
+        # Claude is the preferred live planner; any other available live worker
+        # (e.g. Codex) is used when Claude is not authenticated or disabled.
+        disabled = disabled_worker_names()
+        for candidate in (WorkerName.CLAUDE_CODE, WorkerName.CODEX_CLI):
+            if str(candidate) in disabled:
+                continue
+            adapter = registry.get(candidate)
+            health = adapter.health_check()
+            if health.installed and health.authenticated is not False:
+                return LivePlanner(adapter)
         if goal.plan_mode == "live":
             raise PlanningError("live planning requested but no live planner is available")
         log.info("planner.fallback_deterministic", reason="no live planner available")

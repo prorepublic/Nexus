@@ -140,6 +140,25 @@ def deliver_goal(session: Session, goal: Goal) -> PullRequestRecord | None:
             )
         except GitHubError as exc:
             log.warning("delivery.pr_comment_failed", error=str(exc)[:200])
+        # Evidence-backed resolution replies for completed feedback-repair tasks.
+        for task in tasks:
+            context = dict(task.context or {})
+            if (
+                task.status == TaskStatus.COMPLETED
+                and context.get("source_comment")
+                and not context.get("resolution_replied")
+            ):
+                try:
+                    github.post_validation_summary(
+                        existing.number,
+                        f"nexus:resolved — task `{task.id}` addressed the imported "
+                        f"feedback ({context['source_comment']}). Validation re-ran "
+                        "on the updated branch; see the latest diff.",
+                    )
+                    context["resolution_replied"] = True
+                    task.context = context
+                except GitHubError as exc:
+                    log.warning("delivery.resolution_reply_failed", error=str(exc)[:200])
         record_audit(
             session, "goal.pr-updated", goal_id=goal.id, metadata={"number": existing.number}
         )

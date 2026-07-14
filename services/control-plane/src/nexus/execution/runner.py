@@ -259,9 +259,13 @@ def _db_recorder(
     """Persist a CommandExecution audit row. Best-effort: audit failures are
     logged, never raised into the execution path."""
     from nexus.db.base import session_scope
-    from nexus.db.models import CommandExecution
+    from nexus.db.models import CommandExecution, Run
 
     with session_scope() as session:
+        # ad-hoc executions (health checks, live smoke tests) may carry a
+        # run key that has no Run row; audit them without the FK
+        if run_id is not None and session.get(Run, run_id) is None:
+            run_id = None
         session.add(
             CommandExecution(
                 run_id=run_id,

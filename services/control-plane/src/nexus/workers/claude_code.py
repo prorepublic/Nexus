@@ -15,6 +15,7 @@ JSONL events, process-group termination, env filtering, audit records.
 
 import json
 import shutil
+from pathlib import Path
 
 from nexus.config import get_settings
 from nexus.domain.enums import TaskKind, WorkerName
@@ -63,15 +64,38 @@ class ClaudeCodeAdapter(WorkerAdapter):
                 authenticated=None,
                 detail=f"claude --version failed: {result.stderr.strip()[:200]}",
             )
-        # Authentication cannot be verified without spending a model turn, so it
-        # is reported as unknown rather than assumed (evidence-based reporting).
+        # Cheap standalone-credential detection without spending a model turn:
+        # claude stores CLI credentials in ~/.claude/.credentials.json or the
+        # macOS keychain ("Claude Code-credentials"). An interactive desktop
+        # session does NOT give the standalone CLI credentials, so absence of
+        # both means non-interactive runs will fail auth.
+        creds_file = Path.home() / ".claude" / ".credentials.json"
+        has_credentials = creds_file.exists()
+        if not has_credentials:
+            keychain = get_runner().run(
+                get_profile("health-readonly"),
+                ["security", "find-generic-password", "-s", "Claude Code-credentials"],
+                cwd=get_settings().cache_dir,
+            )
+            has_credentials = keychain.ok
+        if not has_credentials:
+            return WorkerHealth(
+                name=self.name,
+                installed=True,
+                version=version,
+                authenticated=False,
+                detail="installed but not logged in for standalone use: run "
+                "`claude` in a terminal once and use /login with the Claude "
+                "Max account",
+            )
+        # Credentials exist; validity is confirmed on first live run.
         return WorkerHealth(
             name=self.name,
             installed=True,
             version=version,
             authenticated=None,
-            detail="installed; authentication is verified on first live run "
-            "(`nexus worker test claude-code --live`)",
+            detail="installed with stored credentials; verified on first live "
+            "run (`nexus worker test claude-code --live`)",
         )
 
     def capabilities(self) -> WorkerCapabilities:

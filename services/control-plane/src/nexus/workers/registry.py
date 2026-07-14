@@ -25,7 +25,32 @@ class WorkerRegistry:
         return {name: adapter.health_check() for name, adapter in self._adapters.items()}
 
     def available_names(self) -> set[WorkerName]:
-        return {name for name, health in self.all_health().items() if health.available}
+        """Installed+authenticated workers minus any the owner disabled."""
+        disabled = disabled_worker_names()
+        return {
+            name
+            for name, health in self.all_health().items()
+            if health.available and str(name) not in disabled
+        }
+
+
+def disabled_worker_names() -> set[str]:
+    """Workers the owner disabled via `nexus worker disable` (DB flag).
+    Fails open to empty when the database is unavailable (health checks still
+    gate actual execution)."""
+    try:
+        from sqlalchemy import select
+
+        from nexus.db.base import session_scope
+        from nexus.db.models import Worker
+
+        with session_scope() as session:
+            return {
+                worker.name
+                for worker in session.scalars(select(Worker).where(Worker.enabled.is_(False)))
+            }
+    except Exception:
+        return set()
 
 
 _registry: WorkerRegistry | None = None

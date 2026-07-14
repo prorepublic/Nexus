@@ -107,10 +107,32 @@ PROFILES: dict[str, ExecutionProfile] = {
         ExecutionProfile(
             name="health-readonly",
             executables=frozenset(
-                {"git", "gh", "docker", "node", "npm", "python3", "uv", "claude", "codex", "psql"}
+                {
+                    "git",
+                    "gh",
+                    "docker",
+                    "node",
+                    "npm",
+                    "python3",
+                    "uv",
+                    "claude",
+                    "codex",
+                    "psql",
+                    "security",
+                }
             ),
             allowed_subcommands=frozenset(
-                {"--version", "-v", "-V", "auth", "login", "info", "version", "config"}
+                {
+                    "--version",
+                    "-v",
+                    "-V",
+                    "auth",
+                    "login",
+                    "info",
+                    "version",
+                    "config",
+                    "find-generic-password",
+                }
             ),
             timeout_seconds=30,
             max_output_bytes=64_000,
