@@ -133,11 +133,99 @@ AGENTS_DB_SCHEMA: dict[str, Any] = {
     "Last Checked": {"date": {}},
 }
 
+REPOSITORIES_DB_SCHEMA: dict[str, Any] = {
+    "Name": {"title": {}},
+    "Repo ID": {"rich_text": {}},
+    "Trust": {
+        "select": {
+            "options": [
+                {"name": t}
+                for t in ["untrusted", "reviewed", "trusted-local", "trusted-owner-approved"]
+            ]
+        }
+    },
+    "Default Branch": {"rich_text": {}},
+    "Local Path": {"rich_text": {}},
+    "GitHub Link": {"url": {}},
+    "Updated": {"date": {}},
+}
+
+RUNS_DB_SCHEMA: dict[str, Any] = {
+    "Run ID": {"title": {}},
+    "Task": {"rich_text": {}},
+    "Worker": {"select": {"options": [{"name": w} for w in ["claude-code", "codex-cli", "fake"]]}},
+    "Status": {
+        "select": {
+            "options": [
+                {"name": s}
+                for s in ["queued", "running", "succeeded", "failed", "cancelled", "timed_out"]
+            ]
+        }
+    },
+    "Purpose": {
+        "select": {"options": [{"name": p} for p in ["implementation", "review", "planning"]]}
+    },
+    "Started": {"date": {}},
+    "Finished": {"date": {}},
+    "Summary": {"rich_text": {}},
+}
+
+PULL_REQUESTS_DB_SCHEMA: dict[str, Any] = {
+    "Title": {"title": {}},
+    "PR ID": {"rich_text": {}},
+    "Repository": {"rich_text": {}},
+    "Branch": {"rich_text": {}},
+    "State": {"select": {"options": [{"name": s} for s in ["draft", "open", "merged", "closed"]]}},
+    "URL": {"url": {}},
+    "Goal": {"rich_text": {}},
+    "Updated": {"date": {}},
+}
+
+REVIEW_FINDINGS_DB_SCHEMA: dict[str, Any] = {
+    "Description": {"title": {}},
+    "Finding ID": {"rich_text": {}},
+    "Task": {"rich_text": {}},
+    "Severity": {
+        "select": {"options": [{"name": s} for s in ["critical", "high", "medium", "low", "info"]]}
+    },
+    "Category": {"rich_text": {}},
+    "File": {"rich_text": {}},
+    "Blocking": {"checkbox": {}},
+    "Resolved": {"checkbox": {}},
+    "Source": {"select": {"options": [{"name": s} for s in ["agent-review", "pr-comment"]]}},
+}
+
+APPROVALS_DB_SCHEMA: dict[str, Any] = {
+    "Description": {"title": {}},
+    "Approval ID": {"rich_text": {}},
+    "Kind": {"rich_text": {}},
+    "Risk": {"select": {"options": [{"name": r} for r in ["low", "medium", "high"]]}},
+    "State": {
+        "select": {"options": [{"name": s} for s in ["pending", "approved", "denied", "expired"]]}
+    },
+    "Requested": {"date": {}},
+    "Decided": {"date": {}},
+}
+
+PLANS_DB_SCHEMA: dict[str, Any] = {
+    "Objective": {"title": {}},
+    "Plan ID": {"rich_text": {}},
+    "Goal": {"rich_text": {}},
+    "Planner": {"rich_text": {}},
+    "Created": {"date": {}},
+}
+
 DATABASES: dict[str, dict[str, Any]] = {
     "Goals": GOALS_DB_SCHEMA,
     "Tasks": TASKS_DB_SCHEMA,
     "Decisions": DECISIONS_DB_SCHEMA,
     "Agents": AGENTS_DB_SCHEMA,
+    "Repositories": REPOSITORIES_DB_SCHEMA,
+    "Runs": RUNS_DB_SCHEMA,
+    "Pull Requests": PULL_REQUESTS_DB_SCHEMA,
+    "Review Findings": REVIEW_FINDINGS_DB_SCHEMA,
+    "Approvals": APPROVALS_DB_SCHEMA,
+    "Plans": PLANS_DB_SCHEMA,
 }
 
 
@@ -266,6 +354,36 @@ class NotionClient:
             },
         )
         return str(data["id"])
+
+    # -- database pages -------------------------------------------------------
+    def query_database(
+        self, database_id: str, filter_: dict[str, Any] | None = None
+    ) -> list[dict[str, Any]]:
+        """Return all pages in a database, following pagination."""
+        results: list[dict[str, Any]] = []
+        cursor: str | None = None
+        while True:
+            body: dict[str, Any] = {"page_size": 100}
+            if filter_ is not None:
+                body["filter"] = filter_
+            if cursor:
+                body["start_cursor"] = cursor
+            data = self.request("POST", f"/databases/{database_id}/query", body)
+            results.extend(data.get("results", []))
+            if not data.get("has_more"):
+                return results
+            cursor = data.get("next_cursor")
+
+    def create_db_page(self, database_id: str, properties: dict[str, Any]) -> str:
+        data = self.request(
+            "POST",
+            "/pages",
+            {"parent": {"database_id": database_id}, "properties": properties},
+        )
+        return str(data["id"])
+
+    def update_page(self, page_id: str, properties: dict[str, Any]) -> None:
+        self.request("PATCH", f"/pages/{page_id}", {"properties": properties})
 
     def close(self) -> None:
         self._client.close()
