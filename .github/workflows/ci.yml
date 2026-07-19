@@ -37,6 +37,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Secret scan
+        working-directory: .
         run: ./scripts/secret-scan.sh
       - uses: astral-sh/setup-uv@v5
         with:
