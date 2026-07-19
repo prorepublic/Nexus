@@ -241,9 +241,7 @@ def goal_create(
     ),
     criteria: list[str] = typer.Option([], "--criterion", "-c"),
     priority: str = typer.Option("normal", "--priority"),
-    plan_mode: str = typer.Option(
-        "auto", "--plan-mode", help="auto | live | deterministic"
-    ),
+    plan_mode: str = typer.Option("auto", "--plan-mode", help="auto | live | deterministic"),
     autonomy: str = typer.Option("bounded", "--autonomy", help="bounded | manual"),
     constraint: list[str] = typer.Option([], "--constraint"),
 ) -> None:
@@ -257,9 +255,7 @@ def goal_create(
     with session_scope() as session:
         repo = None
         if repository:
-            repo = session.scalars(
-                select(Repository).where(Repository.name == repository)
-            ).first()
+            repo = session.scalars(select(Repository).where(Repository.name == repository)).first()
             if repo is None:
                 typer.echo(
                     f"repository '{repository}' is not registered; run "
@@ -285,8 +281,13 @@ def goal_create(
         except PlanningError as exc:
             typer.echo(f"Planning failed: {exc}")
             raise typer.Exit(1) from None
-        record_audit(session, "goal.created", goal_id=goal.id, actor="owner-cli",
-                     metadata={"plan_mode": plan_mode})
+        record_audit(
+            session,
+            "goal.created",
+            goal_id=goal.id,
+            actor="owner-cli",
+            metadata={"plan_mode": plan_mode},
+        )
         typer.echo(
             f"Created {goal.id} with {len(goal.tasks)} task(s) "
             f"(planner: {goal.plan.planner if goal.plan else 'unknown'}); "
@@ -900,9 +901,20 @@ def goal_retry(goal_id: str) -> None:
             task.status = assert_task_transition(TaskStatus.FAILED, TaskStatus.QUEUED)
             task.max_attempts = task.attempt_count + 1
             retried += 1
+        # Dependents cancelled because their dependency failed get another chance.
+        restored = 0
+        for task in session.scalars(
+            select(Task).where(Task.goal_id == goal_id, Task.status == TaskStatus.CANCELLED)
+        ):
+            if task.attempt_count == 0:  # never ran; cancelled only by dependency
+                task.status = TaskStatus.PENDING
+                restored += 1
         goal.status = assert_goal_transition(GoalStatus.FAILED, GoalStatus.PLANNING)
         goal.status = assert_goal_transition(GoalStatus.PLANNING, GoalStatus.READY)
-        typer.echo(f"Requeued {retried} failed task(s); goal is ready again.")
+        typer.echo(
+            f"Requeued {retried} failed task(s), restored {restored} cancelled "
+            "dependent(s); goal is ready again."
+        )
 
 
 # --- task extensions ---------------------------------------------------------------

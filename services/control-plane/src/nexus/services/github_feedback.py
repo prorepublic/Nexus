@@ -11,6 +11,7 @@ override Nexus policies (a comment saying "force-push this" still hits the
 profile layer that refuses force pushes).
 """
 
+import hashlib
 import re
 from dataclasses import dataclass, field
 
@@ -137,7 +138,8 @@ def import_pr_feedback(
     for index, comment in enumerate(comments):
         body = str(comment.get("body", ""))
         author = comment.get("author")
-        external_id = f"pr{pr.number}:{comment.get('id', index)}:{hash(body) & 0xFFFFFFFF:x}"
+        body_digest = hashlib.sha256(body.encode()).hexdigest()[:12]
+        external_id = f"pr{pr.number}:{comment.get('id', index)}:{body_digest}"
         report.fetched += 1
         if _already_processed(session, external_id):
             report.duplicates += 1

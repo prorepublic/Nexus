@@ -4,37 +4,38 @@ This document summarizes the security posture of the Nexus repository. The full 
 
 ## Posture summary
 
-- **Local-first.** The control plane API binds to 127.0.0.1:8400 and PostgreSQL to 127.0.0.1:5442. Nothing listens on a public interface. Exposing a service publicly is an always-gated action (see below). There is currently no authentication on the localhost API; it is a single-owner placeholder and a known residual risk until auth lands.
-- **Model output is untrusted input.** Anything a worker (Claude Code, Codex CLI) produces — text, file paths, suggested commands — is treated as untrusted. Paths are validated against the workspace, commands go through an argv allowlist, and success claims are verified by independent validation.
+- **Local-first.** The control plane API binds to 127.0.0.1:8400 and PostgreSQL to 127.0.0.1:5442. Nothing listens on a public interface; exposing a service publicly is an always-gated action. The API additionally enforces local-owner protection ([ADR-013](docs/adr/ADR-013-local-owner-api-protection.md)): a Host-header allowlist (localhost/127.0.0.1, defeating DNS rebinding), a required `X-Nexus-Client` header on all state-changing requests (forcing a CORS preflight so hostile web pages cannot fire-and-forget form POSTs), and CORS restricted to localhost:3400. There is still no user authentication on the localhost API; any local process can call it — a documented residual risk until auth lands.
+- **Model output is untrusted input.** Anything a worker (Claude Code, Codex CLI) produces — text, file paths, suggested commands, plans, review verdicts, success claims — is treated as untrusted. Paths are confined to the workspace (traversal, absolute-path, and symlink escapes rejected), plans and verdicts are schema-validated and normalized defensively, and success claims are verified by independent fail-closed validation plus cross-agent review.
 - **Official interfaces only.** Workers are invoked through their official non-interactive CLIs under the owner's existing subscriptions. No browser automation of Claude or ChatGPT, no scraped tokens, no reverse-engineered endpoints.
-- **Least privilege.** Planning and review tasks run with read-only tool sets (`--allowedTools "Read Grep Glob"` for Claude Code, `--sandbox read-only` for Codex). Implementation tasks get write access limited to their workspace. The Claude adapter never uses `--dangerously-skip-permissions`; the Codex adapter never uses `--sandbox danger-full-access`.
+- **Least privilege.** Planning and review tasks run read-only (`--allowedTools "Read Grep Glob"` for Claude Code, `--sandbox read-only` for Codex). Implementation tasks get write access limited to their worktree. Permission-bypass flags (`--dangerously-skip-permissions`, `danger-full-access`) are refused by the execution profiles themselves, so an adapter regression cannot reintroduce them.
+- **Repository code does not run on the host by default.** Registered repositories start `untrusted`; repository-defined validation commands execute only at raised trust levels or behind an explicit `run-untrusted-repository-scripts` approval gate. See [docs/REPOSITORY-TRUST.md](docs/REPOSITORY-TRUST.md).
 
 ## Secret handling
 
-- Tokens, keys, and `.env` files are never committed. `.env` is gitignored; `.env.example` contains names only.
+- Tokens, keys, and `.env` files are never committed. `.env` is gitignored; `.env.example` contains names only. CI runs `scripts/secret-scan.sh` plus `pip-audit` and `npm audit`.
 - `nexus notion setup` writes the Notion token to `.env` with permissions 600. The token is never logged, never persisted to the database, and never included in prompts.
 - GitHub access uses the already-authenticated `gh` CLI; Nexus never handles a GitHub token directly.
-- Structured logging applies aggressive redaction (`src/nexus/observability.py`): GitHub token patterns, Notion tokens, `sk-` API keys, Bearer headers, JWTs, and any key named like `token`, `secret`, `password`, `api_key`, or `authorization`. Redaction applies to logs, persisted run events, audit metadata, and captured command output.
-- Child processes receive a filtered environment (an explicit passthrough list in `src/nexus/policies/command.py`), so ambient secrets do not leak into worker or validation subprocesses.
+- Structured logging applies aggressive redaction (`src/nexus/observability.py`): GitHub token patterns, Notion tokens, `sk-` API keys, Bearer headers, JWTs, and any key named like `token`, `secret`, `password`, `api_key`, or `authorization`. Redaction applies to logs, persisted run events, prompts, audit metadata, captured command output, and everything mirrored to Notion or posted to GitHub.
+- Child processes receive a filtered environment: each execution profile declares an explicit passthrough list (`src/nexus/execution/profiles.py`), so ambient secrets do not leak into worker or validation subprocesses.
+- The built-in `secret-scan` validation check inspects changed files for obvious secret material before a task can complete.
 
-## Command execution policy
+## Command execution
 
-All subprocess execution driven by validation flows through `CommandExecutor` (`src/nexus/policies/command.py`), which is implemented and tested:
+All subprocess execution flows through the centralized execution subsystem (`src/nexus/execution/`, [ADR-006](docs/adr/ADR-006-centralized-execution-subsystem.md)); a static test fails the build if direct `subprocess` use appears anywhere else:
 
+- 15 purpose-specific profiles (health checks, worker runs, git clone/read/worktree/commit/push, GitHub read/write-safe, trusted/untrusted validation, migrations, tool install, launchd), each with its own executables, permitted subcommands, prohibited tokens, timeout, output budget, and environment surface;
 - argv lists only — no shell strings, no interpolation of untrusted text;
-- allowlisted executables only (git, gh, claude, codex, uv, pytest, make, node, npm, and a small set of others);
-- destructive patterns refused regardless of allowlist: `git push --force`/`-f`, `git reset --hard`, `git clean -fd`, `rm -rf`, `docker system prune`;
-- working directory must be at or under the permitted workspace;
-- timeouts (default 600 s) and output caps (512 KB) enforced;
-- stdout/stderr redacted before storage; argv, exit code, and duration audited.
+- prohibited tokens refused in any position, including `--flag=value` forms: git force variants, `--hard`, `--mirror`, `--no-verify`, worker permission bypasses, and gh merge/approve/admin flags;
+- `gh pr merge` and equivalents are unreachable: merge is not a permitted verb in any profile;
+- working directories confined to permitted roots; `..` traversal, absolute escape, and symlink escape rejected;
+- timeouts terminate the whole process group (SIGTERM, then SIGKILL); output caps and redaction before storage; every execution audited in `command_executions`;
+- the `validation-untrusted` profile permits nothing on the host — untrusted repository scripts require an approval gate.
 
 ## Always-gated actions
 
-The following action kinds always require explicit owner approval (`src/nexus/policies/approval.py`), regardless of risk rating or autonomy level:
+Action kinds in `OWNER_APPROVAL_REQUIRED` (`src/nexus/policies/approval.py`) always require explicit owner approval regardless of risk rating or autonomy level: merge-to-main, production-deploy, enable-paid-service, delete-repository, delete-branch-with-unique-work, delete-cloud-resource, delete-database, delete-notion-content, destructive-migration, change-auth-architecture, publish-externally, modify-dns, purchase-domain, access-unrelated-directory, send-external-communication, expose-service-publicly, rotate-owner-credentials, danger-full-access, disable-security-validation, force-push, change-billing.
 
-merge-to-main, production-deploy, enable-paid-service, delete-repository, delete-branch-with-unique-work, delete-cloud-resource, delete-database, delete-notion-content, destructive-migration, change-auth-architecture, publish-externally, modify-dns, purchase-domain, access-unrelated-directory, send-external-communication, expose-service-publicly, rotate-owner-credentials, danger-full-access, disable-security-validation, force-push, change-billing.
-
-Unknown action kinds with high risk fail safe (approval required). Note honestly: the policy engine, approvals API, and dashboard approvals page exist today, but the orchestrator does not yet create approval rows automatically mid-execution; that wiring is planned ([docs/ROADMAP.md](docs/ROADMAP.md)).
+The engine now creates approval gates mid-execution and enforces them: `approve-plan` (manual-autonomy goals execute nothing until the plan is approved), `run-untrusted-repository-scripts` (blocks the task, resumes exactly at validation on approval), and `single-worker-review-fallback` (under the `required` review policy). Blocked work resumes deterministically on approval; denial cancels it and is never re-asked. See [docs/AUTONOMY-AND-APPROVALS.md](docs/AUTONOMY-AND-APPROVALS.md).
 
 ## Reporting
 

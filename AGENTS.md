@@ -6,7 +6,7 @@ These instructions apply to ANY coding agent working in this repository (Codex, 
 
 - Domain logic (`services/control-plane/src/nexus/domain`, `services`, `routing`, `policies`) must never import provider-specific details from adapters. Workers are used only through the `WorkerAdapter` contract in `src/nexus/workers/base.py` (neutral `TaskSpec` / `WorkerResult` / `WorkerEvent`). If you need provider behavior, extend the adapter, not the domain.
 - State transitions for goals, tasks, and runs go exclusively through `src/nexus/domain/transitions.py` (`assert_goal_transition`, `assert_task_transition`, `assert_run_transition`). Never assign a status string directly in orchestration code.
-- All subprocess execution goes through `CommandExecutor` (`src/nexus/policies/command.py`) or an existing adapter with an injectable runner. No raw `subprocess` calls with shell strings, ever.
+- All subprocess execution goes through the centralized execution subsystem (`src/nexus/execution/`: ProcessRunner + purpose-specific profiles, ADR-006). Never call `subprocess` directly; a static test (tests/unit/test_execution.py::TestNoParallelExecutionPaths) fails the build if you do. argv lists only, no shell strings; pick the narrowest existing profile or add one with explicit subcommand/flag restrictions.
 - The web dashboard talks to the control plane only over the HTTP API. Do not reach into the database from `apps/web`.
 - Read the ADRs in `docs/adr/` before proposing changes to queueing, worker interfaces, Notion integration, autonomy, or deployment shape. Superseding an ADR requires a new ADR.
 

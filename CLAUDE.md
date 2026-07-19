@@ -29,7 +29,8 @@ services/control-plane/       Python 3.12, FastAPI, SQLAlchemy 2, Alembic, uv
   src/nexus/domain/           enums + hand-written state machines (transitions.py)
   src/nexus/services/         orchestrator, queue, planner, validation, workspace, events
   src/nexus/workers/          WorkerAdapter contract + fake / claude_code / codex_cli + registry
-  src/nexus/policies/         approval, command (CommandExecutor), cost
+  src/nexus/execution/        ProcessRunner, profiles, path confinement (ADR-006)
+  src/nexus/policies/         approval policy, cost policy
   src/nexus/routing/          rules-based router + cross-review
   src/nexus/adapters/         github (gh CLI), notion (REST), rdap
   src/nexus/api/              FastAPI app (localhost:8400)
@@ -42,7 +43,7 @@ docs/                         architecture, roadmap, runbooks, adr/
 ## Key conventions
 
 - **State transitions only through `domain/transitions.py`.** Illegal transitions must raise `InvalidTransition`; never assign statuses directly in orchestration code.
-- **All subprocess execution via `CommandExecutor`** (`policies/command.py`) or the existing adapters with injectable runners. argv lists only, no shell strings.
+- **All subprocess execution via `nexus.execution`** (ProcessRunner + profiles; ADR-006). Never import subprocess outside `execution/runner.py` — a static test enforces this. Validation is FAIL-CLOSED (skipped/blocked never pass; see ADR-007).
 - **No direct paid API calls.** Workers run through subscription CLIs behind the `WorkerAdapter` contract. Domain code never imports provider specifics.
 - **Tests required for behavior changes.** Adapter parser changes need fixtures in `tests/fixtures/`. Do not weaken existing tests to get green.
 - **Secrets:** never committed, never logged, never in prompts. Redaction lives in `observability.py`; extend it if you add a new secret shape.

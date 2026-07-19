@@ -377,6 +377,23 @@ def create_plan(
 
     detect_cycles(draft.tasks)
     planned = list(draft.tasks)
+
+    # Command-backed validation kinds the repository has no command for would
+    # fail closed deterministically; drop them at plan time with an assumption
+    # note instead of burning worker attempts on unwinnable validation.
+    intrinsic = {"files-exist", "changed-scope", "secret-scan"}
+    configured = set((repo.validation_profile or {}).keys()) if repo is not None else set()
+    dropped: set[str] = set()
+    for item in planned:
+        keep = [v for v in item.validations if v in intrinsic or v in configured]
+        dropped.update(set(item.validations) - set(keep))
+        item.validations = keep
+    if dropped:
+        draft.assumptions.append(
+            "Dropped unconfigured validation kinds from the plan: "
+            + ", ".join(sorted(dropped))
+            + " (configure with `nexus repo validation set` to enable them)."
+        )
     if append_review and not any(task.kind == TaskKind.REVIEW for task in planned):
         # A read-only review task summarizing the goal-level outcome. Per-task
         # independent review runs inside the engine; this is the goal-level pass.

@@ -67,4 +67,10 @@ An action kind on neither list is decided by risk and autonomy: high risk requir
 
 ## Honest status note
 
-The policy engine (`approval_required(...)`), the `approvals` table, the API endpoints, and the dashboard page are all implemented and tested. **What is not yet wired: the orchestrator does not automatically create approval rows when a gated action arises mid-execution.** Creating gates from the execution path — pausing the task in `blocked`, resuming on approval — is scaffolded/planned (Milestone 1, [ROADMAP.md](ROADMAP.md)). Until then, no implemented code path performs always-gated actions autonomously; the practical backstops are the command policy, read-only review modes, and draft-only PRs ([THREAT-MODEL.md](THREAT-MODEL.md), residual risks).
+Approval gates are ENFORCED in the execution engine (ADR-009). Three gates are created automatically today:
+
+- `approve-plan`: a manual-autonomy goal's tasks are not enqueued until the owner approves the generated plan (`nexus goal approve-plan`, dashboard, or API).
+- `run-untrusted-repository-scripts`: when validation needs to run repository-defined commands on the host but the repository's trust level does not permit it, the task moves to `blocked`, an approval is created, and on approval the task resumes EXACTLY at the validation stage (`resume_stage` mechanism) without re-running the worker.
+- `single-worker-review-fallback`: under `review_policy=required`, a task that passed validation but has no independent reviewer blocks until the owner approves completing without cross-agent review.
+
+Denial cancels the gated work, is audited, and is never re-asked for the same operation. Blocked tasks resume deterministically: approval flips the task to `ready`, the queue re-claims it, and the recorded resume stage skips already-completed phases.

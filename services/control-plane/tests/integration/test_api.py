@@ -75,8 +75,11 @@ class TestApi:
     def test_task_detail_and_settings(self, client):
         goal = client.post(
             "/api/goals",
-            json={"title": "Detail goal", "description": "do a detailed thing",
-                  "requested_worker": "fake"},
+            json={
+                "title": "Detail goal",
+                "description": "do a detailed thing",
+                "requested_worker": "fake",
+            },
         ).json()
         task_id = client.get(f"/api/goals/{goal['id']}").json()["tasks"][0]["id"]
         detail = client.get(f"/api/tasks/{task_id}").json()
@@ -111,8 +114,7 @@ class TestLocalOwnerProtection:
         assert hostile_client.get("/health").status_code == 200
 
     def test_foreign_host_refused(self, db_session):
-        client = TestClient(app, headers={"Host": "evil.example.com",
-                                          "X-Nexus-Client": "x"})
+        client = TestClient(app, headers={"Host": "evil.example.com", "X-Nexus-Client": "x"})
         response = client.get("/health")
         assert response.status_code == 421
 
@@ -126,17 +128,21 @@ class TestLocalOwnerProtection:
         goal = Goal(title="g", description="d")
         db_session.add(goal)
         db_session.flush()
-        task = Task(goal_id=goal.id, title="t", instruction="i",
-                    status=TaskStatus.BLOCKED)
+        task = Task(goal_id=goal.id, title="t", instruction="i", status=TaskStatus.BLOCKED)
         db_session.add(task)
         db_session.flush()
-        approval = Approval(kind="run-untrusted-repository-scripts",
-                            description="test", goal_id=goal.id, task_id=task.id)
+        approval = Approval(
+            kind="run-untrusted-repository-scripts",
+            description="test",
+            goal_id=goal.id,
+            task_id=task.id,
+        )
         db_session.add(approval)
         db_session.commit()
 
-        response = client.post(f"/api/approvals/{approval.id}/decision",
-                               json={"decision": "approved"})
+        response = client.post(
+            f"/api/approvals/{approval.id}/decision", json={"decision": "approved"}
+        )
         assert response.json()["ok"]
         db_session.expire_all()
         refreshed = db_session.scalars(select(Task).where(Task.id == task.id)).one()

@@ -524,9 +524,25 @@ class Orchestrator:
                     reason
                 ]
                 self._record_repair_context(task, failed_validations=failed_summaries)
-                self._handle_failure(
-                    session, task, run, FailureCategory.VALIDATION_FAILED, detail=reason
+                # Configuration-blocked checks (no command configured) are
+                # deterministic: retrying would burn model usage without any
+                # chance of success, so they fail fast for operator correction.
+                real_failures = [
+                    o
+                    for o in outcomes
+                    if o.status in {ValidationStatus.FAILED, ValidationStatus.ERROR}
+                ]
+                config_blocked = [
+                    o
+                    for o in outcomes
+                    if o.status == ValidationStatus.BLOCKED and "trust level" not in o.summary
+                ]
+                category = (
+                    FailureCategory.TOOL_UNAVAILABLE
+                    if config_blocked and not real_failures
+                    else FailureCategory.VALIDATION_FAILED
                 )
+                self._handle_failure(session, task, run, category, detail=reason)
                 return
 
             needs_review = (
