@@ -19,6 +19,7 @@ def _isolated_settings(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Itera
     monkeypatch.setenv("NEXUS_CACHE_DIR", str(tmp_path / "cache"))
     monkeypatch.setenv("NEXUS_DATABASE_URL", TEST_DB_URL)
     monkeypatch.setenv("NEXUS_PLANNER_MODE", "deterministic")
+    monkeypatch.setenv("NEXUS_OWNER_TOKEN_FILE", str(tmp_path / "owner-token"))
     get_settings.cache_clear()
     yield
     get_settings.cache_clear()

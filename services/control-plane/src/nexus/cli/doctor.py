@@ -24,7 +24,7 @@ class Check:
     warn: bool = False  # ok=False but non-blocking
 
 
-def _health_run(argv: list[str], cwd: Path | None = None, profile: str = "health-readonly"):
+def _health_run(argv: list[str], cwd: Path | None = None, profile: str = "worker-health-readonly"):
     settings = get_settings()
     settings.cache_dir.mkdir(parents=True, exist_ok=True)
     return get_runner().run(get_profile(profile), argv, cwd=cwd or settings.cache_dir)
@@ -61,7 +61,7 @@ def run_checks() -> list[Check]:
         checks.append(Check(name, version is not None, version or "not found", warn=name in {"uv"}))
 
     if shutil.which("gh"):
-        auth_result = _health_run(["gh", "auth", "status"])
+        auth_result = _health_run(["gh", "auth", "status"], profile="worker-auth-status")
         checks.append(
             Check(
                 "github-auth",

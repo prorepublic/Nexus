@@ -53,7 +53,7 @@ class CodexCliAdapter(WorkerAdapter):
                 "owner's ChatGPT account.",
             )
         runner = get_runner()
-        health_profile = get_profile("health-readonly")
+        health_profile = get_profile("worker-health-readonly")
         cache_dir = get_settings().cache_dir
         cache_dir.mkdir(parents=True, exist_ok=True)
         version_result = runner.run(health_profile, [self.binary, "--version"], cwd=cache_dir)
@@ -67,7 +67,9 @@ class CodexCliAdapter(WorkerAdapter):
             )
         authenticated: bool | None = None
         detail = "installed"
-        login = runner.run(health_profile, [self.binary, "login", "status"], cwd=cache_dir)
+        login = runner.run(
+            get_profile("worker-auth-status"), [self.binary, "login", "status"], cwd=cache_dir
+        )
         combined = (login.stdout + login.stderr).lower()
         if login.exit_code == 0 and "logged in" in combined:
             authenticated = True
@@ -110,7 +112,7 @@ class CodexCliAdapter(WorkerAdapter):
             "--cd",
             str(spec.workspace),
             "--skip-git-repo-check",
-            spec.instruction,
+            "-",  # read the task instruction from stdin, never argv
         ]
 
     def execute(self, spec: TaskSpec, on_event: EventCallback | None = None) -> WorkerResult:
@@ -148,6 +150,7 @@ class CodexCliAdapter(WorkerAdapter):
             on_line=stream_line,
             cancel_key=spec.run_id,
             run_id=spec.run_id,
+            stdin_data=spec.instruction,
         )
         if result.error:
             return WorkerResult(

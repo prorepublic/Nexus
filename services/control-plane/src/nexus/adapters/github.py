@@ -30,7 +30,6 @@ _READONLY_VERBS = {
     ("label", "list"),
     ("run", "list"),
     ("run", "view"),
-    ("auth", "status"),
     ("repo", "view"),
 }
 
@@ -41,6 +40,8 @@ def _profile_for(argv: list[str]) -> str:
         return "git-push"
     positional = [token for token in argv[1:] if not token.startswith("-")]
     pair = tuple(positional[:2])
+    if pair == ("auth", "status"):
+        return "worker-auth-status"
     return "github-readonly" if pair in _READONLY_VERBS else "github-write-safe"
 
 

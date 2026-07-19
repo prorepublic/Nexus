@@ -77,34 +77,60 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["http://localhost:3400", "http://127.0.0.1:3400"],
     allow_methods=["*"],
-    allow_headers=["*", "X-Nexus-Client"],
+    allow_headers=["Content-Type", "X-Nexus-Client", "X-Nexus-Owner-Token"],
 )
 
-# Local-owner protection (ADR-012). Binding to localhost is not sufficient
-# against browser-origin attacks:
-# - Host allowlist defeats DNS rebinding (attacker domain resolving to 127.0.0.1
-#   arrives with a foreign Host header);
-# - state-changing requests require the custom X-Nexus-Client header, which
-#   forces a CORS preflight, so a hostile web page cannot fire-and-forget
-#   form POSTs at the control plane.
+# Local-owner protection (ADR-013). Binding to localhost is not sufficient
+# against browser-origin attacks. Layers, all enforced here:
+# - Host allowlist defeats DNS rebinding (attacker domain resolving to
+#   127.0.0.1 arrives with a foreign Host header);
+# - an Origin allowlist rejects cross-origin state changes outright;
+# - every state-changing request must present the generated local-owner
+#   credential (X-Nexus-Owner-Token, constant-time compared). The dashboard
+#   never embeds the token in browser JavaScript: its same-origin Next.js
+#   proxy reads the chmod-600 token file server-side;
+# - the custom X-Nexus-Client header additionally forces a CORS preflight.
 _ALLOWED_HOSTS = {"localhost", "127.0.0.1"}
+_ALLOWED_ORIGIN_HOSTS = {"localhost", "127.0.0.1"}
 _STATE_CHANGING = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _origin_allowed(origin: str | None) -> bool:
+    if not origin:
+        return True  # non-browser clients (CLI, proxy) send no Origin
+    try:
+        from urllib.parse import urlparse
+
+        return urlparse(origin).hostname in _ALLOWED_ORIGIN_HOSTS
+    except ValueError:
+        return False
 
 
 @app.middleware("http")
 async def local_owner_protection(request, call_next):  # noqa: ANN001
+    from fastapi.responses import JSONResponse
+
     host = (request.headers.get("host") or "").split(":")[0].lower()
     if host not in _ALLOWED_HOSTS:
-        from fastapi.responses import JSONResponse
-
         return JSONResponse({"detail": "host not allowed"}, status_code=421)
-    if request.method in _STATE_CHANGING and not request.headers.get("x-nexus-client"):
-        from fastapi.responses import JSONResponse
+    if request.method in _STATE_CHANGING:
+        if not _origin_allowed(request.headers.get("origin")):
+            return JSONResponse({"detail": "origin not allowed"}, status_code=403)
+        if not request.headers.get("x-nexus-client"):
+            return JSONResponse(
+                {"detail": "missing X-Nexus-Client header (local-owner protection)"},
+                status_code=403,
+            )
+        from nexus.services.owner_auth import verify_token
 
-        return JSONResponse(
-            {"detail": "missing X-Nexus-Client header (local-owner protection)"},
-            status_code=403,
-        )
+        if not verify_token(request.headers.get("x-nexus-owner-token")):
+            return JSONResponse(
+                {
+                    "detail": "missing or invalid owner credential "
+                    "(X-Nexus-Owner-Token; see ~/.nexus/owner-token)"
+                },
+                status_code=403,
+            )
     response = await call_next(request)
     response.headers["X-Content-Type-Options"] = "nosniff"
     response.headers["X-Frame-Options"] = "DENY"
@@ -476,9 +502,11 @@ def get_task(task_id: str, db: Session = Depends(get_db)) -> TaskDetailOut:
         else []
     )
     base = _task_out(task, goal.title if goal else None)
+    from nexus.observability import redact_text
+
     return TaskDetailOut(
         **base.model_dump(),
-        instruction=task.instruction,
+        instruction=redact_text(task.instruction),
         worktree_path=task.worktree_path,
         review_verdict=task.review_verdict,
         validation_results=[

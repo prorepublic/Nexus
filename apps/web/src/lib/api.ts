@@ -1,12 +1,18 @@
 /**
  * Typed client for the Nexus control plane API.
  *
- * Base URL comes from NEXT_PUBLIC_NEXUS_API_URL and defaults to
- * http://localhost:8400.
+ * All requests go through the same-origin proxy at /api/nexus (ADR-013): the
+ * proxy attaches the local-owner credential server-side, so the token never
+ * appears in browser JavaScript and no cross-origin request is ever made.
+ * Server-side callers (server actions) reach the proxy via this app's own
+ * origin.
  */
 
+const SITE_ORIGIN =
+  process.env.NEXT_PUBLIC_SITE_ORIGIN ?? "http://localhost:3400";
+
 export const API_BASE =
-  process.env.NEXT_PUBLIC_NEXUS_API_URL ?? "http://localhost:8400";
+  typeof window === "undefined" ? `${SITE_ORIGIN}/api/nexus` : "/api/nexus";
 
 /* ---------------------------------- types --------------------------------- */
 

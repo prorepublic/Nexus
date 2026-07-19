@@ -8,8 +8,15 @@ pytestmark = pytest.mark.integration
 
 @pytest.fixture
 def client(db_session):
-    """Client that behaves like the dashboard/CLI (sends the local-owner header)."""
-    return TestClient(app, base_url="http://localhost", headers={"X-Nexus-Client": "tests"})
+    """Client that behaves like the dashboard proxy: local-owner token plus
+    client header."""
+    from nexus.services.owner_auth import get_or_create_token
+
+    return TestClient(
+        app,
+        base_url="http://localhost",
+        headers={"X-Nexus-Client": "tests", "X-Nexus-Owner-Token": get_or_create_token()},
+    )
 
 
 @pytest.fixture
@@ -108,7 +115,59 @@ class TestLocalOwnerProtection:
             "/api/goals", json={"title": "attack", "description": "attack"}
         )
         assert response.status_code == 403
-        assert "X-Nexus-Client" in response.json()["detail"]
+
+    def test_client_header_alone_does_not_authenticate(self, hostile_client):
+        """A fake X-Nexus-Client header must NOT be enough (real credential check)."""
+        response = hostile_client.post(
+            "/api/goals",
+            json={"title": "attack", "description": "attack attack"},
+            headers={"X-Nexus-Client": "pretending-to-be-dashboard"},
+        )
+        assert response.status_code == 403
+        assert "owner credential" in response.json()["detail"]
+
+    def test_wrong_owner_token_refused(self, hostile_client):
+        response = hostile_client.post(
+            "/api/goals",
+            json={"title": "attack", "description": "attack attack"},
+            headers={"X-Nexus-Client": "x", "X-Nexus-Owner-Token": "wrong-token"},
+        )
+        assert response.status_code == 403
+
+    def test_malformed_owner_token_refused(self, hostile_client):
+        response = hostile_client.post(
+            "/api/goals",
+            json={"title": "attack", "description": "attack attack"},
+            headers={"X-Nexus-Client": "x", "X-Nexus-Owner-Token": "a" * 5000},
+        )
+        assert response.status_code == 403
+
+    def test_correct_owner_token_authenticates(self, client):
+        response = client.post(
+            "/api/goals",
+            json={
+                "title": "Authorized goal",
+                "description": "created with the real token",
+                "requested_worker": "fake",
+            },
+        )
+        assert response.status_code == 201
+
+    def test_cross_origin_state_change_refused(self, db_session):
+        from nexus.services.owner_auth import get_or_create_token
+
+        evil = TestClient(
+            app,
+            base_url="http://localhost",
+            headers={
+                "X-Nexus-Client": "x",
+                "X-Nexus-Owner-Token": get_or_create_token(),
+                "Origin": "https://evil.example.com",
+            },
+        )
+        response = evil.post("/api/goals", json={"title": "attack", "description": "attack attack"})
+        assert response.status_code == 403
+        assert "origin" in response.json()["detail"].lower()
 
     def test_reads_allowed_without_header(self, hostile_client):
         assert hostile_client.get("/health").status_code == 200

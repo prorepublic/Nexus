@@ -136,6 +136,17 @@ uv run nexus domain search --word nexus --tone authority --count 10
 | OpenAPI-generated TypeScript contracts | Planned |
 | Hybrid/remote deployment | Planned (design: secrets stay local) |
 
+## Deployment
+
+Nexus is local-first and has NO hosted runtime. `vercel.json` at the repository
+root disables Vercel Git deployments (`git.deploymentEnabled: false`) because an
+account-level Vercel Git integration would otherwise auto-deploy pushes. If a
+Vercel project was already auto-created for this repository, the one external
+action required is: disconnect the prorepublic/Nexus Git repository from the
+Vercel project (or disable automatic deployments for it) in the Vercel
+dashboard. Vercel is not a Nexus dependency; nothing in the build, tests, or CI
+invokes it, and no paid hosting is authorized.
+
 ## Documentation
 
 - [VISION.md](VISION.md) — what Nexus is for

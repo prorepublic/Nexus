@@ -54,7 +54,9 @@ class ClaudeCodeAdapter(WorkerAdapter):
                 "@anthropic-ai/claude-code, then run `claude` once to log in.",
             )
         result = get_runner().run(
-            get_profile("health-readonly"), [self.binary, "--version"], cwd=get_settings().cache_dir
+            get_profile("worker-health-readonly"),
+            [self.binary, "--version"],
+            cwd=get_settings().cache_dir,
         )
         version = result.stdout.strip() or None
         if not result.ok:
@@ -73,7 +75,7 @@ class ClaudeCodeAdapter(WorkerAdapter):
         has_credentials = creds_file.exists()
         if not has_credentials:
             keychain = get_runner().run(
-                get_profile("health-readonly"),
+                get_profile("worker-health-readonly"),
                 ["security", "find-generic-password", "-s", "Claude Code-credentials"],
                 cwd=get_settings().cache_dir,
             )
@@ -119,10 +121,11 @@ class ClaudeCodeAdapter(WorkerAdapter):
     # -- execution --------------------------------------------------------
     def build_argv(self, spec: TaskSpec) -> list[str]:
         tools = READ_ONLY_TOOLS if spec.read_only else WRITE_TOOLS
+        # The task instruction is delivered via STDIN (see execute), never argv:
+        # argv appears in process listings and sanitized logs; prompts must not.
         argv = [
             self.binary,
             "-p",
-            spec.instruction,
             "--output-format",
             "stream-json",
             "--verbose",
@@ -168,6 +171,7 @@ class ClaudeCodeAdapter(WorkerAdapter):
             on_line=stream_line,
             cancel_key=spec.run_id,
             run_id=spec.run_id,
+            stdin_data=spec.instruction,
         )
         if result.error:
             return WorkerResult(

@@ -54,6 +54,8 @@ class Settings(BaseSettings):
     # Where isolated worktrees are created
     workspaces_dir: Path = Path.home() / ".nexus" / "workspaces"
     cache_dir: Path = Path.home() / ".nexus" / "cache"
+    # Local-owner API credential (generated on first use, chmod 600)
+    owner_token_file: Path = Path.home() / ".nexus" / "owner-token"
 
     # Notion (optional)
     notion_token: str | None = None

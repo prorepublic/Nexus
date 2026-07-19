@@ -4,6 +4,23 @@ This document summarizes the security posture of the Nexus repository. The full 
 
 ## Posture summary
 
+Acceptance-pass hardening (2026-07-20):
+
+- Worker prompts are delivered via stdin, never argv: process listings, logs,
+  audit rows, and exceptions only ever see a sanitized argv summary plus a
+  SHA-256 prompt digest. Captured output is redacted before persistence.
+- Execution profiles enforce operation-level command schemas: read-only
+  profiles reject every mutating variant (git config/branch/worktree
+  mutation, auth login, npm config set, gh merge/approve/ready) regardless
+  of flag order, aliases, or `--flag=value` form; unknown flags fail closed.
+- Path arguments are confined: `--add-dir`, `--cd`, worktree paths, and any
+  absolute or `..` path argument must resolve inside the permitted roots
+  (symlink-safe); `git -C` / `--git-dir` overrides are prohibited outright.
+- State-changing API requests require the generated local-owner token
+  (constant-time comparison); the dashboard uses a same-origin server-side
+  proxy so the token never reaches browser JavaScript.
+
+
 - **Local-first.** The control plane API binds to 127.0.0.1:8400 and PostgreSQL to 127.0.0.1:5442. Nothing listens on a public interface; exposing a service publicly is an always-gated action. The API additionally enforces local-owner protection ([ADR-013](docs/adr/ADR-013-local-owner-api-protection.md)): a Host-header allowlist (localhost/127.0.0.1, defeating DNS rebinding), a required `X-Nexus-Client` header on all state-changing requests (forcing a CORS preflight so hostile web pages cannot fire-and-forget form POSTs), and CORS restricted to localhost:3400. There is still no user authentication on the localhost API; any local process can call it — a documented residual risk until auth lands.
 - **Model output is untrusted input.** Anything a worker (Claude Code, Codex CLI) produces — text, file paths, suggested commands, plans, review verdicts, success claims — is treated as untrusted. Paths are confined to the workspace (traversal, absolute-path, and symlink escapes rejected), plans and verdicts are schema-validated and normalized defensively, and success claims are verified by independent fail-closed validation plus cross-agent review.
 - **Official interfaces only.** Workers are invoked through their official non-interactive CLIs under the owner's existing subscriptions. No browser automation of Claude or ChatGPT, no scraped tokens, no reverse-engineered endpoints.
