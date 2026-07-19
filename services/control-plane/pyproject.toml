@@ -1,0 +1,71 @@
+[project]
+name = "nexus-control-plane"
+version = "0.1.0"
+description = "Nexus control plane: orchestration API, state management, and CLI"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn>=0.30",
+    "pydantic>=2.8",
+    "pydantic-settings>=2.4",
+    "sqlalchemy>=2.0",
+    "alembic>=1.13",
+    "psycopg[binary]>=3.2",
+    "typer>=0.12",
+    "httpx>=0.27",
+    "structlog>=24.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "ruff>=0.6",
+    "mypy>=1.11",
+    "pip-audit>=2.7",
+    "types-requests",
+]
+
+[project.scripts]
+nexus = "nexus.cli.main:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/nexus"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "integration: requires a running PostgreSQL (make db-up)",
+    "live: invokes a real worker CLI (never run in CI)",
+]
+addopts = "-ra"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "S", "N", "W"]
+ignore = [
+    "S101", # asserts are fine in tests and invariants
+    "S603", # subprocess without shell — arguments are policy-validated lists
+    "S607", # PATH-resolved executables are intentional (git, gh, claude, codex)
+    "N818", # domain exceptions are named for their meaning, not an Error suffix
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S", "B017"]
+"src/nexus/api/**" = ["B008"]  # FastAPI Depends() in defaults is the framework idiom
+"src/nexus/cli/**" = ["B008"]  # typer.Option() in defaults is the framework idiom
+
+[tool.mypy]
+python_version = "3.12"
+strict = false
+warn_unused_ignores = true
+warn_redundant_casts = true
+disallow_untyped_defs = false
+check_untyped_defs = true
+ignore_missing_imports = true

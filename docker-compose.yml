@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: nexus-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${NEXUS_DB_USER:-nexus}
+      # Local development default. Postgres is bound to localhost only and
+      # holds no owner credentials. Override via .env for anything else.
+      POSTGRES_PASSWORD: ${NEXUS_DB_PASSWORD:-nexus_local_dev}
+      POSTGRES_DB: ${NEXUS_DB_NAME:-nexus}
+    ports:
+      - "127.0.0.1:${NEXUS_DB_PORT:-5442}:5432"
+    volumes:
+      - nexus_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NEXUS_DB_USER:-nexus} -d ${NEXUS_DB_NAME:-nexus}"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  nexus_pgdata:
